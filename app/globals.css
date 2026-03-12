@@ -876,6 +876,16 @@ button {
   background: var(--warning-50);
 }
 
+.badge-expired {
+  color: #c2410c;
+  background: #fff7ed;
+}
+
+.badge-grace {
+  color: #7c3aed;
+  background: #f5f3ff;
+}
+
 .list-stack {
   display: flex;
   flex-direction: column;

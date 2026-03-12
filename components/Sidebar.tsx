@@ -46,6 +46,16 @@ const navigation = [
     ),
   },
   {
+    href: "/operations",
+    title: "Operations",
+    copy: "Forecast, manifest, reconciliation",
+    icon: (
+      <svg className="side-link-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+      </svg>
+    ),
+  },
+  {
     href: "/admin",
     title: "Admin",
     copy: "Catalog, logs and demo setup",

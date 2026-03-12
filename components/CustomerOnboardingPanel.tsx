@@ -17,7 +17,7 @@ type DirectoryEntry = {
   name: string;
   phone: string;
   address: string | null;
-  status: "Active" | "Completed" | "Cancelled";
+  status: "Active" | "Completed" | "Cancelled" | "Expired" | "Grace";
   total_tiffins: number;
   remaining_tiffins: number;
   price_per_tiffin: number;
@@ -51,6 +51,9 @@ export default function CustomerOnboardingPanel({
   const [mealTypeId, setMealTypeId] = useState(catalog.mealTypes[0]?.id ?? "");
   const [customStartDate, setCustomStartDate] = useState(todayIST());
   const [deliveredTillDate, setDeliveredTillDate] = useState("0");
+  const [mealPreference, setMealPreference] = useState("veg");
+  const [skipSaturday, setSkipSaturday] = useState(false);
+  const [deliveryNotes, setDeliveryNotes] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
@@ -168,6 +171,9 @@ export default function CustomerOnboardingPanel({
     formData.set("customStartDate", customStartDate);
     formData.set("customInvoiceDate", customStartDate);
     formData.set("deliveredTillDate", deliveredTillDate || "0");
+    formData.set("mealPreference", mealPreference);
+    formData.set("skipSaturday", skipSaturday ? "true" : "false");
+    if (deliveryNotes.trim()) formData.set("deliveryNotes", deliveryNotes.trim());
 
     const response = await createCustomerWithSubscription(formData);
     setLoading(false);
@@ -453,6 +459,46 @@ export default function CustomerOnboardingPanel({
                 className="text-input"
               />
               <p className="field-copy">For backdated subscriptions, the app will backfill previous delivery deductions.</p>
+            </div>
+          </div>
+
+          <div className="form-grid-3">
+            <div className="field">
+              <label className="field-label" htmlFor="meal-preference">Meal preference</label>
+              <select
+                id="meal-preference"
+                value={mealPreference}
+                onChange={(event) => setMealPreference(event.target.value)}
+                className="select-input"
+              >
+                <option value="veg">Veg</option>
+                <option value="non_veg">Non-Veg</option>
+                <option value="mixed">Mixed</option>
+              </select>
+              <p className="field-copy">Used for kitchen forecast and KOT generation.</p>
+            </div>
+            <div className="field">
+              <label className="field-label" htmlFor="skip-saturday">
+                <input
+                  id="skip-saturday"
+                  type="checkbox"
+                  checked={skipSaturday}
+                  onChange={(event) => setSkipSaturday(event.target.checked)}
+                  style={{ marginRight: 8 }}
+                />
+                Skip Saturdays
+              </label>
+              <p className="field-copy">Saturdays won&apos;t deduct credits and subscription extends.</p>
+            </div>
+            <div className="field">
+              <label className="field-label" htmlFor="delivery-notes">Delivery notes</label>
+              <input
+                id="delivery-notes"
+                value={deliveryNotes}
+                onChange={(event) => setDeliveryNotes(event.target.value)}
+                className="text-input"
+                placeholder="Gate code, landmarks..."
+              />
             </div>
           </div>
 

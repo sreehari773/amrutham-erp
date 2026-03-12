@@ -72,3 +72,42 @@ export function formatINR(amount: number | null): string {
 
   return INR_FORMATTER.format(amount);
 }
+
+/** Returns the current hour in IST (0-23). Useful for midday cutoff checks. */
+export function currentISTHour(): number {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: IST_TZ,
+    hour: "numeric",
+    hour12: false,
+  });
+  return Number.parseInt(formatter.format(new Date()), 10);
+}
+
+/** Returns current IST minute (0-59). */
+export function currentISTMinute(): number {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: IST_TZ,
+    minute: "numeric",
+  });
+  return Number.parseInt(formatter.format(new Date()), 10);
+}
+
+/** Kitchen cutoff: 10:30 AM IST. Returns true if current time is past cutoff. */
+export function isPastKitchenCutoff(): boolean {
+  const hour = currentISTHour();
+  const minute = currentISTMinute();
+  return hour > 10 || (hour === 10 && minute >= 30);
+}
+
+/** Returns tomorrow's date in IST as YYYY-MM-DD. */
+export function tomorrowIST(): string {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  const { year, month, day } = getIstDateParts(date);
+  return `${year}-${month}-${day}`;
+}
+
+/** Returns day of week for an ISO date (0=Sunday, 6=Saturday). */
+export function dayOfWeek(dateStr: string): number {
+  return new Date(`${dateStr}T00:00:00+05:30`).getDay();
+}

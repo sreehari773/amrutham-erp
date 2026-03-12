@@ -3,8 +3,12 @@
 -- ============================================================
 
 -- 1. ENUMS
-CREATE TYPE subscription_status AS ENUM ('Active', 'Completed', 'Cancelled');
+CREATE TYPE subscription_status AS ENUM ('Active', 'Completed', 'Cancelled', 'Expired', 'Grace');
 CREATE TYPE payment_mode_enum AS ENUM ('UPI', 'Cash', 'Card', 'Bank Transfer');
+
+-- NOTE: If migrating an existing database, run these instead:
+-- ALTER TYPE subscription_status ADD VALUE 'Expired';
+-- ALTER TYPE subscription_status ADD VALUE 'Grace';
 
 -- 2. TABLES
 
@@ -32,6 +36,10 @@ CREATE TABLE subscriptions (
   refund_liability  NUMERIC(12,2),
   last_reminded_at  TIMESTAMPTZ,
   branch_id         TEXT NOT NULL DEFAULT 'Western Line',
+  meal_preference   TEXT NOT NULL DEFAULT 'veg' CHECK (meal_preference IN ('veg', 'non_veg', 'mixed')),
+  skip_saturday     BOOLEAN NOT NULL DEFAULT FALSE,
+  delivery_notes    TEXT,
+  route_id          BIGINT,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -123,6 +131,10 @@ SELECT
   s.refund_liability,
   s.last_reminded_at,
   s.branch_id,
+  s.meal_preference,
+  s.skip_saturday,
+  s.delivery_notes,
+  s.route_id,
   s.created_at,
   li.invoice_number AS latest_invoice_number,
   li.amount AS latest_invoice_amount,
@@ -150,7 +162,10 @@ CREATE OR REPLACE FUNCTION create_customer_with_subscription(
   p_price_per_tiffin NUMERIC,
   p_payment_mode payment_mode_enum DEFAULT 'UPI',
   p_custom_start_date DATE DEFAULT NULL,
-  p_custom_invoice_date DATE DEFAULT NULL
+  p_custom_invoice_date DATE DEFAULT NULL,
+  p_meal_preference TEXT DEFAULT 'veg',
+  p_skip_saturday BOOLEAN DEFAULT FALSE,
+  p_delivery_notes TEXT DEFAULT NULL
 )
 RETURNS JSON
 LANGUAGE plpgsql
@@ -178,10 +193,12 @@ BEGIN
   -- Insert subscription (unique partial index blocks duplicate actives)
   INSERT INTO subscriptions (
     customer_id, total_tiffins, remaining_tiffins,
-    price_per_tiffin, total_amount, start_date
+    price_per_tiffin, total_amount, start_date,
+    meal_preference, skip_saturday, delivery_notes
   ) VALUES (
     v_customer_id, p_total_tiffins, p_total_tiffins,
-    p_price_per_tiffin, v_total, v_start
+    p_price_per_tiffin, v_total, v_start,
+    p_meal_preference, p_skip_saturday, p_delivery_notes
   ) RETURNING id INTO v_sub_id;
 
   -- Generate invoice
@@ -262,23 +279,26 @@ RETURNS TABLE (
   subscription_id BIGINT,
   name TEXT,
   address TEXT,
-  phone TEXT
+  phone TEXT,
+  meal_preference TEXT,
+  delivery_notes TEXT
 )
 LANGUAGE plpgsql STABLE
 AS $$
 BEGIN
   RETURN QUERY
-  SELECT s.id, c.name, c.address, c.phone
+  SELECT s.id, c.name, c.address, c.phone, s.meal_preference, s.delivery_notes
   FROM subscriptions s
   JOIN customers c ON c.id = s.customer_id
-  WHERE s.status = 'Active'
-    AND s.remaining_tiffins > 0
+  WHERE s.status IN ('Active', 'Grace')
+    AND (s.status = 'Grace' OR s.remaining_tiffins > 0)
     AND p_target_date >= s.start_date
     AND NOT (
       s.pause_start IS NOT NULL
       AND p_target_date >= s.pause_start
       AND p_target_date <= COALESCE(s.pause_end, p_target_date)
     )
+    AND NOT (s.skip_saturday AND EXTRACT(DOW FROM p_target_date) = 6)
   ORDER BY c.name;
 END;
 $$;
@@ -302,6 +322,7 @@ BEGIN
         AND p_target_date >= s.pause_start
         AND p_target_date <= COALESCE(s.pause_end, p_target_date)
       )
+      AND NOT (s.skip_saturday AND EXTRACT(DOW FROM p_target_date) = 6)
   ),
   inserted AS (
     INSERT INTO deliveries (subscription_id, delivery_date, reason)
@@ -313,7 +334,7 @@ BEGIN
   updated AS (
     UPDATE subscriptions s
     SET remaining_tiffins = s.remaining_tiffins - 1,
-        status = CASE WHEN s.remaining_tiffins - 1 = 0 THEN 'Completed'::subscription_status ELSE s.status END,
+        status = CASE WHEN s.remaining_tiffins - 1 = 0 THEN 'Expired'::subscription_status ELSE s.status END,
         completed_at = CASE WHEN s.remaining_tiffins - 1 = 0 THEN NOW() ELSE s.completed_at END
     FROM inserted i
     WHERE s.id = i.subscription_id
@@ -373,7 +394,7 @@ BEGIN
 
     UPDATE subscriptions SET
       remaining_tiffins = remaining_tiffins - 1,
-      status = CASE WHEN remaining_tiffins - 1 = 0 THEN 'Completed'::subscription_status ELSE status END,
+      status = CASE WHEN remaining_tiffins - 1 = 0 THEN 'Expired'::subscription_status ELSE status END,
       completed_at = CASE WHEN remaining_tiffins - 1 = 0 THEN NOW() ELSE completed_at END
     WHERE id = p_sub_id;
 
@@ -461,6 +482,7 @@ DECLARE
   v_prepaid_liability NUMERIC;
   v_active_count INT;
   v_completed_count INT;
+  v_expired_count INT;
 BEGIN
   v_start := (p_target_month || '-01')::DATE;
   v_end := (v_start + INTERVAL '1 month')::DATE;
@@ -480,11 +502,15 @@ BEGIN
   WHERE status = 'Completed'
     AND completed_at >= v_start AND completed_at < v_end;
 
+  SELECT COUNT(*) INTO v_expired_count
+  FROM subscriptions WHERE status IN ('Expired', 'Grace');
+
   RETURN json_build_object(
     'monthly_revenue', v_monthly_revenue,
     'prepaid_liability', v_prepaid_liability,
     'active_count', v_active_count,
-    'completed_count', v_completed_count
+    'completed_count', v_completed_count,
+    'expired_count', v_expired_count
   );
 END;
 $$;
@@ -505,9 +531,220 @@ BEGIN
   SELECT s.id, c.name, c.phone, s.remaining_tiffins, s.last_reminded_at
   FROM subscriptions s
   JOIN customers c ON c.id = s.customer_id
-  WHERE s.status = 'Active'
+  WHERE s.status IN ('Active', 'Expired', 'Grace')
     AND s.remaining_tiffins <= 3
     AND (s.last_reminded_at IS NULL OR s.last_reminded_at < NOW() - INTERVAL '2 days')
   ORDER BY s.remaining_tiffins ASC;
 END;
 $$;
+
+-- ============================================================
+-- 6. OPERATIONS LAYER TABLES
+-- ============================================================
+
+-- Pause history for audit trail and churn analysis
+CREATE TABLE pause_history (
+  id              BIGSERIAL PRIMARY KEY,
+  subscription_id BIGINT NOT NULL REFERENCES subscriptions(id),
+  pause_start     DATE NOT NULL,
+  pause_end       DATE,
+  pause_mode      TEXT NOT NULL DEFAULT 'override' CHECK (pause_mode IN ('override', 'cumulative')),
+  reason          TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_pause_history_sub ON pause_history(subscription_id);
+
+-- Weekly rotating menu schedule
+CREATE TABLE menu_schedule (
+  id              BIGSERIAL PRIMARY KEY,
+  day_of_week     INT NOT NULL CHECK (day_of_week BETWEEN 0 AND 6), -- 0=Sunday
+  meal_slot       TEXT NOT NULL DEFAULT 'lunch',
+  veg_items       TEXT NOT NULL,
+  non_veg_items   TEXT NOT NULL,
+  veg_alternatives TEXT,
+  side_items      TEXT,
+  notes           TEXT,
+  effective_from  DATE NOT NULL DEFAULT CURRENT_DATE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(day_of_week, meal_slot, effective_from)
+);
+
+-- Kitchen forecast for production planning
+CREATE TABLE kitchen_forecast (
+  id             BIGSERIAL PRIMARY KEY,
+  forecast_date  DATE NOT NULL UNIQUE,
+  veg_count      INT NOT NULL DEFAULT 0,
+  non_veg_count  INT NOT NULL DEFAULT 0,
+  mixed_count    INT NOT NULL DEFAULT 0,
+  total_count    INT NOT NULL DEFAULT 0,
+  generated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Delivery routes for manifest sorting
+CREATE TABLE delivery_routes (
+  id         BIGSERIAL PRIMARY KEY,
+  route_name TEXT NOT NULL UNIQUE,
+  area_codes TEXT[],
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Add FK for route_id on subscriptions (column already added above)
+ALTER TABLE subscriptions ADD CONSTRAINT fk_subscriptions_route
+  FOREIGN KEY (route_id) REFERENCES delivery_routes(id);
+
+-- Driver assignments per route
+CREATE TABLE driver_assignments (
+  id          BIGSERIAL PRIMARY KEY,
+  route_id    BIGINT NOT NULL REFERENCES delivery_routes(id),
+  driver_name TEXT NOT NULL,
+  phone       TEXT,
+  active      BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Reconciliation run logs
+CREATE TABLE reconciliation_runs (
+  id                  BIGSERIAL PRIMARY KEY,
+  run_date            DATE NOT NULL,
+  resumed             INT NOT NULL DEFAULT 0,
+  delivered           INT NOT NULL DEFAULT 0,
+  expired             INT NOT NULL DEFAULT 0,
+  graced              INT NOT NULL DEFAULT 0,
+  forecast_generated  BOOLEAN NOT NULL DEFAULT FALSE,
+  manifest_generated  BOOLEAN NOT NULL DEFAULT FALSE,
+  errors              JSONB,
+  started_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at        TIMESTAMPTZ
+);
+
+-- Messaging events for WhatsApp automation
+CREATE TABLE messaging_events (
+  id              BIGSERIAL PRIMARY KEY,
+  subscription_id BIGINT REFERENCES subscriptions(id),
+  customer_id     BIGINT REFERENCES customers(id),
+  event_type      TEXT NOT NULL,
+  channel         TEXT NOT NULL DEFAULT 'whatsapp',
+  message_text    TEXT,
+  status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
+  sent_at         TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_messaging_sub ON messaging_events(subscription_id);
+CREATE INDEX idx_messaging_type ON messaging_events(event_type);
+
+-- ============================================================
+-- 7. OPERATIONS LAYER RPCs
+-- ============================================================
+
+-- RPC: Generate kitchen forecast for a date
+CREATE OR REPLACE FUNCTION generate_kitchen_forecast(p_target_date DATE DEFAULT CURRENT_DATE + 1)
+RETURNS JSON
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_veg INT;
+  v_non_veg INT;
+  v_mixed INT;
+  v_total INT;
+BEGIN
+  SELECT
+    COUNT(*) FILTER (WHERE s.meal_preference = 'veg'),
+    COUNT(*) FILTER (WHERE s.meal_preference = 'non_veg'),
+    COUNT(*) FILTER (WHERE s.meal_preference = 'mixed')
+  INTO v_veg, v_non_veg, v_mixed
+  FROM subscriptions s
+  WHERE s.status IN ('Active', 'Grace')
+    AND (s.status = 'Grace' OR s.remaining_tiffins > 0)
+    AND p_target_date >= s.start_date
+    AND NOT (
+      s.pause_start IS NOT NULL
+      AND p_target_date >= s.pause_start
+      AND p_target_date <= COALESCE(s.pause_end, p_target_date)
+    )
+    AND NOT (s.skip_saturday AND EXTRACT(DOW FROM p_target_date) = 6);
+
+  v_total := v_veg + v_non_veg + v_mixed;
+
+  INSERT INTO kitchen_forecast (forecast_date, veg_count, non_veg_count, mixed_count, total_count)
+  VALUES (p_target_date, v_veg, v_non_veg, v_mixed, v_total)
+  ON CONFLICT (forecast_date) DO UPDATE SET
+    veg_count = v_veg,
+    non_veg_count = v_non_veg,
+    mixed_count = v_mixed,
+    total_count = v_total,
+    generated_at = NOW();
+
+  RETURN json_build_object(
+    'forecast_date', p_target_date,
+    'veg_count', v_veg,
+    'non_veg_count', v_non_veg,
+    'mixed_count', v_mixed,
+    'total_count', v_total
+  );
+END;
+$$;
+
+-- RPC: Generate delivery manifest for a date
+CREATE OR REPLACE FUNCTION generate_delivery_manifest(p_target_date DATE DEFAULT CURRENT_DATE)
+RETURNS JSON
+LANGUAGE plpgsql STABLE
+AS $$
+DECLARE
+  v_manifest JSON;
+BEGIN
+  SELECT json_agg(row_to_json(m)) INTO v_manifest
+  FROM (
+    SELECT
+      s.id AS subscription_id,
+      c.name,
+      c.phone,
+      c.address,
+      s.meal_preference,
+      s.delivery_notes,
+      s.status,
+      s.remaining_tiffins,
+      dr.route_name,
+      dr.sort_order AS route_sort,
+      da.driver_name,
+      da.phone AS driver_phone
+    FROM subscriptions s
+    JOIN customers c ON c.id = s.customer_id
+    LEFT JOIN delivery_routes dr ON dr.id = s.route_id
+    LEFT JOIN driver_assignments da ON da.route_id = dr.id AND da.active = TRUE
+    WHERE s.status IN ('Active', 'Grace')
+      AND (s.status = 'Grace' OR s.remaining_tiffins > 0)
+      AND p_target_date >= s.start_date
+      AND NOT (
+        s.pause_start IS NOT NULL
+        AND p_target_date >= s.pause_start
+        AND p_target_date <= COALESCE(s.pause_end, p_target_date)
+      )
+      AND NOT (s.skip_saturday AND EXTRACT(DOW FROM p_target_date) = 6)
+    ORDER BY COALESCE(dr.sort_order, 9999), c.name
+  ) m;
+
+  RETURN COALESCE(v_manifest, '[]'::JSON);
+END;
+$$;
+
+-- Materialized view for subscription analytics
+CREATE MATERIALIZED VIEW IF NOT EXISTS subscription_analytics AS
+SELECT
+  c.id AS customer_id,
+  c.name,
+  c.phone,
+  COUNT(s.id) AS total_subscriptions,
+  COUNT(s.id) FILTER (WHERE s.status = 'Active') AS active_count,
+  COUNT(s.id) FILTER (WHERE s.status = 'Completed') AS completed_count,
+  COUNT(s.id) FILTER (WHERE s.status = 'Cancelled') AS cancelled_count,
+  COUNT(s.id) FILTER (WHERE s.status IN ('Expired', 'Grace')) AS expired_count,
+  COALESCE(SUM(s.total_amount), 0) AS lifetime_value,
+  MAX(s.created_at) AS last_subscription_date,
+  COUNT(DISTINCT ph.id) AS total_pauses
+FROM customers c
+LEFT JOIN subscriptions s ON s.customer_id = c.id
+LEFT JOIN pause_history ph ON ph.subscription_id = s.id
+GROUP BY c.id, c.name, c.phone;
+
+CREATE UNIQUE INDEX idx_analytics_customer ON subscription_analytics(customer_id);

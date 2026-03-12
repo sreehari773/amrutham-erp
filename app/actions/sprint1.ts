@@ -35,7 +35,7 @@ type DirectoryRow = {
   total_tiffins: number;
   remaining_tiffins: number;
   price_per_tiffin: number;
-  status: "Active" | "Completed" | "Cancelled";
+  status: "Active" | "Completed" | "Cancelled" | "Expired" | "Grace";
   start_date: string | null;
   created_at: string;
 };
@@ -91,6 +91,7 @@ function revalidateOperationalViews() {
   revalidatePath("/menus");
   revalidatePath("/admin");
   revalidatePath("/kot");
+  revalidatePath("/operations");
 }
 
 function getMonthBounds(targetMonth: string) {
@@ -319,6 +320,9 @@ export async function createCustomerWithSubscription(formData: FormData) {
       "deliveredTillDate",
       "Delivered till date"
     );
+    const mealPreference = getOptionalString(formData, "mealPreference") ?? "veg";
+    const skipSaturday = formData.get("skipSaturday") === "true";
+    const deliveryNotes = getOptionalString(formData, "deliveryNotes");
 
     const { data: catalog } = await getSubscriptionCatalog();
     const selection = resolveSubscriptionSelection(catalog, templateId, mealTypeId);
@@ -344,6 +348,9 @@ export async function createCustomerWithSubscription(formData: FormData) {
       p_payment_mode: paymentMode,
       p_custom_start_date: customStartDate,
       p_custom_invoice_date: customInvoiceDate,
+      p_meal_preference: mealPreference,
+      p_skip_saturday: skipSaturday,
+      p_delivery_notes: deliveryNotes,
     });
 
     if (error) {
@@ -553,19 +560,57 @@ export async function getCustomerDirectory(query = "", limit = 30) {
   }
 }
 
-export async function pauseSubscription(subId: number, pauseStart: string, pauseEnd: string | null) {
+export async function pauseSubscription(
+  subId: number,
+  pauseStart: string,
+  pauseEnd: string | null,
+  pauseMode: "override" | "cumulative" = "override",
+  reason?: string,
+) {
   try {
     const sb = getSupabaseAdmin();
 
+    // Midday cutoff: if pausing for today and it's past 10:30 AM IST, start tomorrow
+    const { isPastKitchenCutoff, todayIST: getToday, tomorrowIST: getTomorrow } = await import("@/lib/utils");
+    const today = getToday();
+    let effectiveStart = pauseStart;
+
+    if (pauseStart === today && isPastKitchenCutoff()) {
+      effectiveStart = getTomorrow();
+    }
+
+    // Handle cumulative mode: extend existing pause
+    if (pauseMode === "cumulative") {
+      const { data: currentSub } = await sb
+        .from("subscriptions")
+        .select("pause_start, pause_end")
+        .eq("id", subId)
+        .single();
+
+      if (currentSub?.pause_start && pauseEnd) {
+        // Extend: keep original start, push end further
+        effectiveStart = currentSub.pause_start;
+      }
+    }
+
     const { error } = await sb
       .from("subscriptions")
-      .update({ pause_start: pauseStart, pause_end: pauseEnd })
+      .update({ pause_start: effectiveStart, pause_end: pauseEnd })
       .eq("id", subId)
       .eq("status", "Active");
 
     if (error) {
       return { error: error.message };
     }
+
+    // Log to pause_history
+    await sb.from("pause_history").insert({
+      subscription_id: subId,
+      pause_start: effectiveStart,
+      pause_end: pauseEnd,
+      pause_mode: pauseMode,
+      reason: reason ?? null,
+    });
 
     revalidateOperationalViews();
     return { success: true };
@@ -578,6 +623,13 @@ export async function resumeSubscription(subId: number) {
   try {
     const sb = getSupabaseAdmin();
 
+    // Get current pause info before clearing
+    const { data: currentSub } = await sb
+      .from("subscriptions")
+      .select("pause_start, pause_end")
+      .eq("id", subId)
+      .single();
+
     const { error } = await sb
       .from("subscriptions")
       .update({ pause_start: null, pause_end: null })
@@ -585,6 +637,17 @@ export async function resumeSubscription(subId: number) {
 
     if (error) {
       return { error: error.message };
+    }
+
+    // Update pause_history with actual end date
+    if (currentSub?.pause_start) {
+      const today = todayIST();
+      await sb
+        .from("pause_history")
+        .update({ pause_end: today })
+        .eq("subscription_id", subId)
+        .eq("pause_start", currentSub.pause_start)
+        .is("pause_end", null);
     }
 
     revalidateOperationalViews();

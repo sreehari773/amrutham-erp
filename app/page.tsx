@@ -27,6 +27,7 @@ export default async function DashboardPage() {
     prepaid_liability: 0,
     active_count: 0,
     completed_count: 0,
+    expired_count: 0,
   };
 
   const deliveryStats = deliveryStatsResult.data ?? {
@@ -114,6 +115,13 @@ export default async function DashboardPage() {
           copy="Plans that exhausted all tiffins this month"
           tint="rgba(139, 92, 246, 0.14)"
           icon={<PulseIcon color="#8b5cf6" />}
+        />
+        <DashboardStatCard
+          label="Expired / Grace"
+          value={String(revenue.expired_count ?? 0)}
+          copy="Subscriptions awaiting renewal (credits exhausted)"
+          tint="rgba(239, 68, 68, 0.12)"
+          icon={<AlertIcon color="#ef4444" />}
         />
         <DashboardStatCard
           label="Delivered This Month"
@@ -273,6 +281,16 @@ function CheckIcon({ color }: { color: string }) {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8">
       <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function AlertIcon({ color }: { color: string }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8">
+      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
     </svg>
   );
 }

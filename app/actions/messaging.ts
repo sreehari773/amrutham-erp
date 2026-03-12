@@ -1,0 +1,97 @@
+"use server";
+
+import { getSupabaseAdmin } from "@/lib/supabase";
+import { buildMessageText, type MessageTemplate } from "@/lib/messaging";
+
+export type MessagingEvent = {
+  id: number;
+  subscription_id: number | null;
+  customer_id: number | null;
+  event_type: string;
+  channel: string;
+  message_text: string | null;
+  status: string;
+  sent_at: string | null;
+  created_at: string;
+};
+
+export async function queueMessage(input: {
+  subscriptionId?: number;
+  customerId?: number;
+  eventType: MessageTemplate;
+  vars?: Record<string, string>;
+}): Promise<{ data?: MessagingEvent; error?: string }> {
+  const sb = getSupabaseAdmin();
+  const text = buildMessageText(input.eventType, input.vars ?? {});
+
+  const { data, error } = await sb
+    .from("messaging_events")
+    .insert({
+      subscription_id: input.subscriptionId ?? null,
+      customer_id: input.customerId ?? null,
+      event_type: input.eventType,
+      message_text: text,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  return { data: data as MessagingEvent };
+}
+
+export async function markMessageSent(
+  eventId: number,
+): Promise<{ error?: string }> {
+  const sb = getSupabaseAdmin();
+
+  const { error } = await sb
+    .from("messaging_events")
+    .update({ status: "sent", sent_at: new Date().toISOString() })
+    .eq("id", eventId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  return {};
+}
+
+export async function getMessageHistory(
+  subscriptionId: number,
+): Promise<{ data: MessagingEvent[]; error?: string }> {
+  const sb = getSupabaseAdmin();
+
+  const { data, error } = await sb
+    .from("messaging_events")
+    .select("*")
+    .eq("subscription_id", subscriptionId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    return { data: [], error: error.message };
+  }
+
+  return { data: (data ?? []) as MessagingEvent[] };
+}
+
+export async function getRecentMessages(
+  limit = 20,
+): Promise<{ data: MessagingEvent[]; error?: string }> {
+  const sb = getSupabaseAdmin();
+
+  const { data, error } = await sb
+    .from("messaging_events")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    return { data: [], error: error.message };
+  }
+
+  return { data: (data ?? []) as MessagingEvent[] };
+}

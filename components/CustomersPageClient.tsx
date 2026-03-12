@@ -18,7 +18,7 @@ type SubscriptionRow = {
   name: string;
   phone: string;
   address: string | null;
-  status: "Active" | "Completed" | "Cancelled";
+  status: "Active" | "Completed" | "Cancelled" | "Expired" | "Grace";
   remaining_tiffins: number;
   total_tiffins: number;
   price_per_tiffin: number;
@@ -27,6 +27,7 @@ type SubscriptionRow = {
   latest_invoice_number: string | null;
   latest_invoice_amount: number | null;
   pause_start: string | null;
+  meal_preference?: string;
 };
 
 type DirectoryEntry = {
@@ -34,7 +35,7 @@ type DirectoryEntry = {
   name: string;
   phone: string;
   address: string | null;
-  status: "Active" | "Completed" | "Cancelled";
+  status: "Active" | "Completed" | "Cancelled" | "Expired" | "Grace";
   total_tiffins: number;
   remaining_tiffins: number;
   price_per_tiffin: number;
@@ -60,7 +61,7 @@ export default function CustomersPageClient({
   const [catalog, setCatalog] = useState<SubscriptionCatalog>(initialCatalog);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(initialError);
-  const [filter, setFilter] = useState<"all" | "Active" | "Completed" | "Cancelled">("all");
+  const [filter, setFilter] = useState<"all" | "Active" | "Completed" | "Cancelled" | "Expired" | "Grace">("all");
   const [search, setSearch] = useState(searchParams.get("q") ?? "");
 
   useEffect(() => {
@@ -112,6 +113,8 @@ export default function CustomersPageClient({
     Active: subs.filter((item) => item.status === "Active").length,
     Completed: subs.filter((item) => item.status === "Completed").length,
     Cancelled: subs.filter((item) => item.status === "Cancelled").length,
+    Expired: subs.filter((item) => item.status === "Expired").length,
+    Grace: subs.filter((item) => item.status === "Grace").length,
   };
 
   return (
@@ -151,7 +154,7 @@ export default function CustomersPageClient({
           </div>
           <div className="panel-actions">
             <div className="segment">
-              {(["all", "Active", "Completed", "Cancelled"] as const).map((item) => (
+              {(["all", "Active", "Expired", "Grace", "Completed", "Cancelled"] as const).map((item) => (
                 <button
                   type="button"
                   key={item}
