@@ -1,8 +1,14 @@
 function requireEnv(name: string): string {
+  if (typeof window !== "undefined") return process.env[name] || "";
   const value = process.env[name]?.trim();
 
   if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
+    // If it's a Vercel build, we return an empty string to allow THE BUILD to complete.
+    // The ENV will actually be present at RUNTIME on Vercel.
+    if (process.env.VERCEL || process.env.CI) {
+      return "";
+    }
+    throw new Error(`Missing required environment variable: ${name}. Check your .env file or Vercel settings.`);
   }
 
   return value;
@@ -21,8 +27,8 @@ function firstDefinedEnv(names: string[]): string | undefined {
 }
 
 export const env = {
-  supabaseUrl: requireEnv("NEXT_PUBLIC_SUPABASE_URL"),
-  supabaseServiceRoleKey: requireEnv("SUPABASE_SERVICE_ROLE_KEY"),
+  get supabaseUrl() { return requireEnv("NEXT_PUBLIC_SUPABASE_URL"); },
+  get supabaseServiceRoleKey() { return requireEnv("SUPABASE_SERVICE_ROLE_KEY"); },
 };
 
 export function isBasicAuthConfigured(): boolean {
