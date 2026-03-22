@@ -22,19 +22,20 @@ BEGIN
   FROM invoices
   WHERE created_at >= v_start AND created_at < v_end;
 
+  -- Bypass Enum casing errors using ::text ILIKE
   SELECT COALESCE(SUM(remaining_tiffins * price_per_tiffin), 0) INTO v_prepaid_liability
-  FROM subscriptions WHERE status = 'Active';
+  FROM subscriptions WHERE status::text ILIKE 'active';
 
   SELECT COUNT(*) INTO v_active_count
-  FROM subscriptions WHERE status = 'Active';
+  FROM subscriptions WHERE status::text ILIKE 'active';
 
   SELECT COUNT(*) INTO v_completed_count
   FROM subscriptions
-  WHERE status = 'Completed'
+  WHERE status::text ILIKE 'completed'
     AND completed_at >= v_start AND completed_at < v_end;
 
   SELECT COUNT(*) INTO v_expired_count
-  FROM subscriptions WHERE status IN ('Expired', 'Grace');
+  FROM subscriptions WHERE status::text ILIKE 'expired' OR status::text ILIKE 'grace';
 
   RETURN json_build_object(
     'monthly_revenue', v_monthly_revenue,
@@ -62,7 +63,8 @@ BEGIN
   SELECT s.id, c.name, c.phone, s.remaining_tiffins, s.last_reminded_at
   FROM subscriptions s
   JOIN customers c ON c.id = s.customer_id
-  WHERE s.status IN ('Active', 'Expired', 'Grace')
+  -- Bypass Enum casing errors
+  WHERE (s.status::text ILIKE 'active' OR s.status::text ILIKE 'expired' OR s.status::text ILIKE 'grace')
     AND s.remaining_tiffins <= 3
     AND (s.last_reminded_at IS NULL OR s.last_reminded_at < NOW() - INTERVAL '2 days')
   ORDER BY s.remaining_tiffins ASC;

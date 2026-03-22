@@ -93,12 +93,12 @@ export async function GET(req: Request) {
         "S.No": serial++,
         "Name": data.customer?.name || "N/A",
         "Phone": data.customer?.phone || "N/A",
-        "No. of Tiffins": data.total_tiffins,
-        "Period": periodStart && periodEnd ? `${periodStart} to ${periodEnd}` : data.period,
-        "Previous Pendency": pastPendency,
-        "This Month Billing": data.thisMonthTotal,
-        "Total Amount Paid": data.amountPaid,
-        "Total Outstanding": totalPendingNow,
+        "Billed Start Date": periodStart || "N/A",
+        "Billed End Date": periodEnd || "N/A",
+        "Payment Pending": pastPendency,
+        "Bill of Selected Tenure": data.thisMonthTotal,
+        "Total Paid": data.amountPaid,
+        "New Total": totalPendingNow,
       });
     });
 
