@@ -1,22 +1,18 @@
-import { getDailyMenuForDate } from "@/app/actions/sprint1";
-import { getWeeklySchedule } from "@/app/actions/menu-schedule";
-import DailyMenuManager from "@/components/DailyMenuManager";
-import WeeklyScheduleEditor from "@/components/WeeklyScheduleEditor";
-import { todayIST } from "@/lib/utils";
+import { getWeeklyMenus } from "@/app/actions/menus";
+import WeeklyMenuManager from "@/components/WeeklyMenuManager";
 
 export const dynamic = "force-dynamic";
 
 export default async function MenusPage() {
-  const today = todayIST();
-  const [response, scheduleResult] = await Promise.all([
-    getDailyMenuForDate(today),
-    getWeeklySchedule(),
-  ]);
+  const response = await getWeeklyMenus();
 
-  return (
-    <div className="page-stack">
-      <DailyMenuManager initialMenu={response.data} initialError={response.error ?? null} />
-      <WeeklyScheduleEditor initialSchedule={scheduleResult.data} />
-    </div>
-  );
+  if (response.error) {
+    return (
+      <div className="page-stack p-8">
+        <div className="alert alert-error">Error loading weekly menus: {response.error}</div>
+      </div>
+    );
+  }
+
+  return <WeeklyMenuManager initialMenus={response.data} />;
 }

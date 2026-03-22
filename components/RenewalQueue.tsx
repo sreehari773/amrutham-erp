@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { markReminded } from "@/app/actions/sprint1";
+import { markReminded, quickRenewSubscription } from "@/app/actions/sprint1";
 import { formatTimestampIST } from "@/lib/utils";
 
 type QueueItem = {
@@ -92,6 +92,25 @@ export default function RenewalQueue({ initialQueue = [], initialError = null }:
                   disabled={pendingId === item.subscription_id}
                 >
                   {pendingId === item.subscription_id ? "Saving..." : "Mark reminded"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={async () => {
+                    if (!window.confirm(`Are you sure you want to renew ${item.customer_name}'s subscription using their previous plan?`)) return;
+                    setPendingId(item.subscription_id);
+                    const res = await quickRenewSubscription(item.subscription_id);
+                    setPendingId(null);
+                    if (res.error) setError(res.error);
+                    else {
+                      setError(null);
+                      setQueue((q) => q.filter((i) => i.subscription_id !== item.subscription_id));
+                      window.alert(`Successfully renewed subscription for ${item.customer_name}!`);
+                    }
+                  }}
+                  disabled={pendingId === item.subscription_id}
+                >
+                  Quick Renew
                 </button>
               </div>
             </div>

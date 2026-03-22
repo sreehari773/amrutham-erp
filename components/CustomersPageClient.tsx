@@ -5,12 +5,11 @@ import { useSearchParams } from "next/navigation";
 import {
   getCustomerDirectory,
   getCustomersWithSubs,
-  getSubscriptionCatalog,
 } from "@/app/actions/sprint1";
 import CustomerOnboardingPanel from "@/components/CustomerOnboardingPanel";
-import CustomerRowActions from "@/components/CustomerRowActions";
-import { inferSubscriptionSelection, type SubscriptionCatalog } from "@/lib/subscription-catalog";
-import { formatDateIST, formatINR } from "@/lib/utils";
+import CustomerModificationModal from "@/components/CustomerModificationModal";
+import type { SubscriptionPlan } from "@/app/actions/plans";
+import { formatINR } from "@/lib/utils";
 
 type SubscriptionRow = {
   subscription_id: number;
@@ -45,24 +44,25 @@ type DirectoryEntry = {
 type Props = {
   initialSubs: SubscriptionRow[];
   initialDirectory: DirectoryEntry[];
-  initialCatalog: SubscriptionCatalog;
+  subscriptionPlans: SubscriptionPlan[];
   initialError?: string | null;
 };
 
 export default function CustomersPageClient({
   initialSubs,
   initialDirectory,
-  initialCatalog,
+  subscriptionPlans,
   initialError = null,
 }: Props) {
   const searchParams = useSearchParams();
   const [subs, setSubs] = useState<SubscriptionRow[]>(initialSubs);
   const [directory, setDirectory] = useState<DirectoryEntry[]>(initialDirectory);
-  const [catalog, setCatalog] = useState<SubscriptionCatalog>(initialCatalog);
+  const [plans, setPlans] = useState<SubscriptionPlan[]>(subscriptionPlans);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(initialError);
-  const [filter, setFilter] = useState<"all" | "Active" | "Completed" | "Cancelled" | "Expired" | "Grace">("all");
+  const [activeTab, setActiveTab] = useState<"Active" | "Inactive">("Active");
   const [search, setSearch] = useState(searchParams.get("q") ?? "");
+  const [selectedCustomer, setSelectedCustomer] = useState<SubscriptionRow | null>(null);
 
   useEffect(() => {
     setSearch(searchParams.get("q") ?? "");
@@ -71,17 +71,15 @@ export default function CustomersPageClient({
   async function refreshCustomers() {
     setLoading(true);
 
-    const [subsResult, directoryResult, catalogResult] = await Promise.all([
+    const [subsResult, directoryResult] = await Promise.all([
       getCustomersWithSubs(),
       getCustomerDirectory("", 60),
-      getSubscriptionCatalog(),
     ]);
 
     setLoading(false);
     setSubs((subsResult.data ?? []) as SubscriptionRow[]);
     setDirectory((directoryResult.data ?? []) as DirectoryEntry[]);
-    setCatalog(catalogResult.data ?? initialCatalog);
-    setError(subsResult.error ?? directoryResult.error ?? catalogResult.error ?? null);
+    setError(subsResult.error ?? directoryResult.error ?? null);
   }
 
   const selectedMode = searchParams.get("mode") === "returning" ? "returning" : "new";
@@ -91,7 +89,11 @@ export default function CustomersPageClient({
     const query = search.trim().toLowerCase();
 
     return subs.filter((subscription) => {
-      if (filter !== "all" && subscription.status !== filter) {
+      // Tab filtering
+      const isActiveTab = activeTab === "Active";
+      const isSubActive = subscription.status === "Active";
+      
+      if (isActiveTab !== isSubActive) {
         return false;
       }
 
@@ -101,20 +103,14 @@ export default function CustomersPageClient({
 
       return (
         subscription.name.toLowerCase().includes(query) ||
-        subscription.phone.includes(query) ||
-        subscription.subscription_id.toString().includes(query) ||
-        subscription.address?.toLowerCase().includes(query)
+        subscription.phone.includes(query)
       );
     });
-  }, [filter, search, subs]);
+  }, [activeTab, search, subs]);
 
   const counts = {
     all: subs.length,
     Active: subs.filter((item) => item.status === "Active").length,
-    Completed: subs.filter((item) => item.status === "Completed").length,
-    Cancelled: subs.filter((item) => item.status === "Cancelled").length,
-    Expired: subs.filter((item) => item.status === "Expired").length,
-    Grace: subs.filter((item) => item.status === "Grace").length,
   };
 
   return (
@@ -137,138 +133,86 @@ export default function CustomersPageClient({
       {error ? <div className="alert alert-error">{error}</div> : null}
 
       <CustomerOnboardingPanel
-        catalog={catalog}
+        plans={plans}
         directory={directory}
         initialMode={selectedMode}
         initialCustomerId={selectedCustomerId}
         onCreated={refreshCustomers}
       />
 
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2 className="panel-title">Subscription ledger</h2>
-            <p className="panel-copy">
-              Search, filter, and act on current or previous subscriptions. Returning customers can be restarted directly from completed plans.
-            </p>
-          </div>
-          <div className="panel-actions">
-            <div className="segment">
-              {(["all", "Active", "Expired", "Grace", "Completed", "Cancelled"] as const).map((item) => (
-                <button
-                  type="button"
-                  key={item}
-                  className={`segment-button${filter === item ? " active" : ""}`}
-                  onClick={() => setFilter(item)}
-                >
-                  {item === "all" ? "All" : item} {counts[item]}
-                </button>
-              ))}
-            </div>
-            <button type="button" className="btn-secondary" onClick={() => void refreshCustomers()} disabled={loading}>
-              {loading ? "Refreshing..." : "Refresh"}
-            </button>
-          </div>
-        </div>
-
-        <div className="field-stack">
-          <div className="field">
-            <label className="field-label" htmlFor="customer-search-inline">
-              Search ledger
-            </label>
+      <section className="panel" style={{ padding: 0, overflow: 'hidden' }}>
+        <div className="panel-header" style={{ padding: '24px 24px 0 24px', borderBottom: 'none' }}>
+          <div className="flex w-full items-center justify-between gap-4">
             <input
               id="customer-search-inline"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              className="text-input"
-              placeholder="Search by customer, phone, address, or subscription id"
+              className="text-input w-full max-w-md"
+              placeholder="Search by name or phone..."
             />
           </div>
+        </div>
 
-          <div className="table-shell">
-            <div className="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Customer</th>
-                    <th>Current plan</th>
-                    <th>Status</th>
-                    <th>Tiffins</th>
-                    <th>Start</th>
-                    <th>Invoice</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((subscription) => {
-                    const inferred = inferSubscriptionSelection(
-                      catalog,
-                      subscription.total_tiffins,
-                      subscription.price_per_tiffin
-                    );
-                    const template = catalog.templates.find((item) => item.id === inferred.templateId);
-                    const mealType = catalog.mealTypes.find((item) => item.id === inferred.mealTypeId);
+        <div className="px-6 flex border-b" style={{ borderColor: 'var(--border)' }}>
+          <button
+            onClick={() => setActiveTab("Active")}
+            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === "Active" ? "border-black text-black" : "border-transparent text-gray-500 hover:text-black"
+            }`}
+          >
+            Active Customers
+          </button>
+          <button
+            onClick={() => setActiveTab("Inactive")}
+            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === "Inactive" ? "border-black text-black" : "border-transparent text-gray-500 hover:text-black"
+            }`}
+          >
+            Inactive Customers
+          </button>
+        </div>
 
-                    return (
-                      <tr key={subscription.subscription_id}>
-                        <td>
-                          <div className="list-item-copy">
-                            <strong>{subscription.name}</strong>
-                            <span>
-                              {subscription.phone}
-                              {subscription.address ? ` | ${subscription.address}` : ""}
-                            </span>
-                          </div>
-                        </td>
-                        <td>
-                          <div className="list-item-copy">
-                            <strong>{template?.label ?? `${subscription.total_tiffins} tiffins`}</strong>
-                            <span>{mealType?.label ?? "Custom pricing"}</span>
-                          </div>
-                        </td>
-                        <td>
-                          <div className={`badge badge-${subscription.status.toLowerCase()}`}>
-                            {subscription.status}
-                          </div>
-                          {subscription.pause_start ? <div className="badge badge-paused" style={{ marginTop: 8 }}>Paused</div> : null}
-                        </td>
-                        <td>
-                          <div className="list-item-copy">
-                            <strong>
-                              {subscription.remaining_tiffins} / {subscription.total_tiffins}
-                            </strong>
-                            <span>{formatINR(subscription.price_per_tiffin)} per tiffin</span>
-                          </div>
-                        </td>
-                        <td>{formatDateIST(subscription.start_date)}</td>
-                        <td>
-                          <div className="list-item-copy">
-                            <strong>{subscription.latest_invoice_number ?? "--"}</strong>
-                            <span>{formatINR(subscription.latest_invoice_amount ?? subscription.total_amount ?? 0)}</span>
-                          </div>
-                        </td>
-                        <td>
-                          <CustomerRowActions sub={subscription} catalog={catalog} onRefresh={refreshCustomers} />
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {filtered.length === 0 ? (
-                    <tr>
-                      <td colSpan={7}>
-                        <div className="empty-state">
-                          <strong>No subscriptions matched</strong>
-                          <span>Try a different filter or search query.</span>
-                        </div>
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
+        <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
+          {filtered.map((subscription) => {
+            return (
+              <div 
+                key={subscription.subscription_id} 
+                className="p-4 hover:bg-black/5 cursor-pointer flex justify-between items-center transition-colors"
+                onClick={() => setSelectedCustomer(subscription)}
+              >
+                <div>
+                  <strong className="block text-base">{subscription.name}</strong>
+                  <span className="text-sm text-gray-500">{subscription.phone}</span>
+                </div>
+                <div className="text-right flex items-center gap-3">
+                  {subscription.pause_start ? <div className="badge badge-paused">Paused</div> : null}
+                  <div className={`badge badge-${subscription.status.toLowerCase()}`}>
+                    {subscription.status}
+                  </div>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </div>
+              </div>
+            );
+          })}
+          
+          {filtered.length === 0 ? (
+            <div className="p-8 text-center text-gray-500">
+              No {activeTab.toLowerCase()} customers found matching your search.
             </div>
-          </div>
+          ) : null}
         </div>
       </section>
+
+      {selectedCustomer && (
+        <CustomerModificationModal 
+          sub={selectedCustomer} 
+          plans={plans}
+          onClose={() => setSelectedCustomer(null)} 
+          onRefresh={refreshCustomers}
+        />
+      )}
     </div>
   );
 }

@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import {
-  getDailyMenuForDate,
   getMonthlyDeliveryStats,
   getRenewalQueue,
   getRevenueSummary,
 } from "@/app/actions/sprint1";
+import { getMenuForDay } from "@/app/actions/menus";
 import DashboardActions from "@/components/DashboardActions";
 import RenewalQueue from "@/components/RenewalQueue";
 import { currentMonthIST, formatINR, todayIST } from "@/lib/utils";
@@ -19,7 +19,7 @@ export default async function DashboardPage() {
     getRevenueSummary(month),
     getRenewalQueue(),
     getMonthlyDeliveryStats(month),
-    getDailyMenuForDate(today),
+    getMenuForDay(today),
   ]);
 
   const revenue = revenueResult.data ?? {
@@ -38,12 +38,9 @@ export default async function DashboardPage() {
   };
 
   const menu = menuResult.data ?? {
-    breakfast: "",
-    veg: "",
-    nonVeg: "",
-    mixed: "",
-    addons: "",
-    notes: "",
+    day_of_week: "Today",
+    veg_description: "Not set",
+    non_veg_description: "Not set",
   };
 
   const greeting = (() => {
@@ -171,17 +168,13 @@ export default async function DashboardPage() {
         <div className="panel">
           <div className="panel-header">
             <div>
-              <h2 className="panel-title">Today&apos;s menu</h2>
-              <p className="panel-copy">Dispatch copy for the current service day. Update the full menu from the Menus section.</p>
+              <h2 className="panel-title">Today&apos;s menu ({menu.day_of_week})</h2>
+              <p className="panel-copy">Dispatch copy for today. Update the full menu from the Menus section.</p>
             </div>
           </div>
           <div className="list-stack">
-            <MenuRow label="Breakfast" value={menu.breakfast} />
-            <MenuRow label="Veg" value={menu.veg} />
-            <MenuRow label="Non Veg" value={menu.nonVeg} />
-            <MenuRow label="Mixed" value={menu.mixed} />
-            <MenuRow label="Add-ons" value={menu.addons} />
-            <MenuRow label="Notes" value={menu.notes} />
+            <MenuRow label="Veg Menu" value={menu.veg_description} />
+            <MenuRow label="Non-Veg Menu" value={menu.non_veg_description} />
           </div>
         </div>
       </section>

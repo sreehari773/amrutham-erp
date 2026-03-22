@@ -6,11 +6,10 @@ import { getDailyMenuForDate, saveDailyMenu } from "@/app/actions/sprint1";
 type DailyMenu = {
   date: string;
   breakfast: string;
-  veg: string;
-  nonVeg: string;
-  mixed: string;
-  addons: string;
-  notes: string;
+  lunchVeg: string;
+  lunchNonVeg: string;
+  dinnerVeg: string;
+  dinnerNonVeg: string;
 };
 
 type Props = {
@@ -63,7 +62,7 @@ export default function DailyMenuManager({ initialMenu, initialError = null }: P
           <p className="page-eyebrow">Menu planner</p>
           <h1 className="page-title">Daily menus</h1>
           <p className="page-copy">
-            Set the kitchen run once for the day so dashboard and ops teams see the same veg, non-veg, mixed, and note stack.
+            Set the kitchen run once for the day so dashboard and ops teams see the same meals.
           </p>
         </div>
         <div className="hero-chip-row">
@@ -112,67 +111,55 @@ export default function DailyMenuManager({ initialMenu, initialError = null }: P
               className="text-area"
               value={menu.breakfast}
               onChange={(event) => setMenu((current) => ({ ...current, breakfast: event.target.value }))}
-              placeholder="Breakfast menu or prep note"
+              placeholder="Breakfast menu"
             />
           </div>
           <div className="field">
-            <label className="field-label" htmlFor="menu-addons">
-              Add-ons
+            <label className="field-label" htmlFor="menu-lunch-veg">
+              Lunch (Veg)
             </label>
             <textarea
-              id="menu-addons"
+              id="menu-lunch-veg"
               className="text-area"
-              value={menu.addons}
-              onChange={(event) => setMenu((current) => ({ ...current, addons: event.target.value }))}
-              placeholder="Salad, sweets, chaas, extras"
+              value={menu.lunchVeg}
+              onChange={(event) => setMenu((current) => ({ ...current, lunchVeg: event.target.value }))}
+              placeholder="Vegetarian Lunch"
             />
           </div>
           <div className="field">
-            <label className="field-label" htmlFor="menu-veg">
-              Veg run
+            <label className="field-label" htmlFor="menu-lunch-non-veg">
+              Lunch (Non-Veg)
             </label>
             <textarea
-              id="menu-veg"
+              id="menu-lunch-non-veg"
               className="text-area"
-              value={menu.veg}
-              onChange={(event) => setMenu((current) => ({ ...current, veg: event.target.value }))}
-              placeholder="Veg tiffin contents"
+              value={menu.lunchNonVeg}
+              onChange={(event) => setMenu((current) => ({ ...current, lunchNonVeg: event.target.value }))}
+              placeholder="Non-Vegetarian Lunch"
             />
           </div>
           <div className="field">
-            <label className="field-label" htmlFor="menu-non-veg">
-              Non-veg run
+            <label className="field-label" htmlFor="menu-dinner-veg">
+              Dinner (Veg)
             </label>
             <textarea
-              id="menu-non-veg"
+              id="menu-dinner-veg"
               className="text-area"
-              value={menu.nonVeg}
-              onChange={(event) => setMenu((current) => ({ ...current, nonVeg: event.target.value }))}
-              placeholder="Non-veg tiffin contents"
+              value={menu.dinnerVeg}
+              onChange={(event) => setMenu((current) => ({ ...current, dinnerVeg: event.target.value }))}
+              placeholder="Vegetarian Dinner"
             />
           </div>
           <div className="field">
-            <label className="field-label" htmlFor="menu-mixed">
-              Mixed run
+            <label className="field-label" htmlFor="menu-dinner-non-veg">
+              Dinner (Non-Veg)
             </label>
             <textarea
-              id="menu-mixed"
+              id="menu-dinner-non-veg"
               className="text-area"
-              value={menu.mixed}
-              onChange={(event) => setMenu((current) => ({ ...current, mixed: event.target.value }))}
-              placeholder="How mixed-route customers should be handled"
-            />
-          </div>
-          <div className="field">
-            <label className="field-label" htmlFor="menu-notes">
-              Dispatch notes
-            </label>
-            <textarea
-              id="menu-notes"
-              className="text-area"
-              value={menu.notes}
-              onChange={(event) => setMenu((current) => ({ ...current, notes: event.target.value }))}
-              placeholder="Driver notes, substitutions, branch notes"
+              value={menu.dinnerNonVeg}
+              onChange={(event) => setMenu((current) => ({ ...current, dinnerNonVeg: event.target.value }))}
+              placeholder="Non-Vegetarian Dinner"
             />
           </div>
         </div>

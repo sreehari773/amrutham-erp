@@ -1,15 +1,9 @@
-"use client";
-
 import { useEffect, useMemo, useState } from "react";
 import {
   createCustomerWithSubscription,
   getReturningCustomerSuggestion,
 } from "@/app/actions/sprint1";
-import {
-  inferSubscriptionSelection,
-  resolveSubscriptionSelection,
-  type SubscriptionCatalog,
-} from "@/lib/subscription-catalog";
+import type { SubscriptionPlan } from "@/app/actions/plans";
 import { formatINR, todayIST } from "@/lib/utils";
 
 type DirectoryEntry = {
@@ -25,7 +19,7 @@ type DirectoryEntry = {
 };
 
 type Props = {
-  catalog: SubscriptionCatalog;
+  plans: SubscriptionPlan[];
   directory: DirectoryEntry[];
   initialMode?: "new" | "returning";
   initialCustomerId?: number | null;
@@ -33,7 +27,7 @@ type Props = {
 };
 
 export default function CustomerOnboardingPanel({
-  catalog,
+  plans,
   directory,
   initialMode = "new",
   initialCustomerId = null,
@@ -47,8 +41,7 @@ export default function CustomerOnboardingPanel({
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [paymentMode, setPaymentMode] = useState("UPI");
-  const [templateId, setTemplateId] = useState(catalog.templates[0]?.id ?? "");
-  const [mealTypeId, setMealTypeId] = useState(catalog.mealTypes[0]?.id ?? "");
+  const [planId, setPlanId] = useState<number | "">(plans[0]?.id ?? "");
   const [customStartDate, setCustomStartDate] = useState(todayIST());
   const [deliveredTillDate, setDeliveredTillDate] = useState("0");
   const [mealPreference, setMealPreference] = useState("veg");
@@ -58,14 +51,10 @@ export default function CustomerOnboardingPanel({
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   useEffect(() => {
-    if (!templateId) {
-      setTemplateId(catalog.templates[0]?.id ?? "");
+    if (!planId && plans.length > 0) {
+      setPlanId(plans[0]?.id ?? "");
     }
-
-    if (!mealTypeId) {
-      setMealTypeId(catalog.mealTypes[0]?.id ?? "");
-    }
-  }, [catalog, mealTypeId, templateId]);
+  }, [plans, planId]);
 
   useEffect(() => {
     if (initialCustomerId) {
@@ -116,21 +105,13 @@ export default function CustomerOnboardingPanel({
     setName(selectedCustomer.name ?? "");
     setPhone(selectedCustomer.phone ?? "");
     setAddress(selectedCustomer.address ?? "");
-
-    const inferred = inferSubscriptionSelection(
-      catalog,
-      selectedCustomer.total_tiffins,
-      selectedCustomer.price_per_tiffin
-    );
-
-    if (inferred.templateId) {
-      setTemplateId(inferred.templateId);
+    
+    // Auto-select plan based on their total tiffins if possible
+    if (plans.length > 0) {
+       const matchedPlan = plans.find(p => p.tiffin_count === selectedCustomer.total_tiffins);
+       if (matchedPlan) setPlanId(matchedPlan.id);
     }
-
-    if (inferred.mealTypeId) {
-      setMealTypeId(inferred.mealTypeId);
-    }
-  }, [catalog, mode, selectedCustomer]);
+  }, [plans, mode, selectedCustomer]);
 
   const filteredDirectory = useMemo(() => {
     const query = pickerQuery.trim().toLowerCase();
@@ -149,12 +130,8 @@ export default function CustomerOnboardingPanel({
   }, [directory, pickerQuery]);
 
   const selection = useMemo(() => {
-    try {
-      return resolveSubscriptionSelection(catalog, templateId, mealTypeId);
-    } catch {
-      return null;
-    }
-  }, [catalog, mealTypeId, templateId]);
+    return plans.find(p => p.id === planId) ?? null;
+  }, [plans, planId]);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -166,8 +143,7 @@ export default function CustomerOnboardingPanel({
     formData.set("phone", phone);
     formData.set("address", address);
     formData.set("paymentMode", paymentMode);
-    formData.set("templateId", templateId);
-    formData.set("mealTypeId", mealTypeId);
+    formData.set("planId", String(planId));
     formData.set("customStartDate", customStartDate);
     formData.set("customInvoiceDate", customStartDate);
     formData.set("deliveredTillDate", deliveredTillDate || "0");
@@ -217,8 +193,7 @@ export default function CustomerOnboardingPanel({
       setName("");
       setPhone("");
       setAddress("");
-      setTemplateId(catalog.templates[0]?.id ?? "");
-      setMealTypeId(catalog.mealTypes[0]?.id ?? "");
+      setPlanId(plans[0]?.id ?? "");
     }
   }
 
@@ -352,44 +327,23 @@ export default function CustomerOnboardingPanel({
           </div>
 
           <div className="field-stack">
-            <div>
-              <p className="field-label">Subscription plan</p>
-              <p className="field-copy">Choose a subscription count first. Pricing comes from the assigned meal type.</p>
-            </div>
-            <div className="option-grid">
-              {catalog.templates.map((template) => (
-                <button
-                  key={template.id}
-                  type="button"
-                  className={`option-card${template.id === templateId ? " active" : ""}`}
-                  onClick={() => setTemplateId(template.id)}
-                >
-                  <p className="option-title">{template.label}</p>
-                  <p className="option-copy">{template.description || "Configured from admin catalog"}</p>
-                  <div className="option-metric">{template.tiffinCount} tiffins</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="field-stack">
-            <div>
-              <p className="field-label">Meal type</p>
-              <p className="field-copy">Veg, non-veg, and mixed prices are centrally managed in Admin.</p>
-            </div>
-            <div className="option-grid">
-              {catalog.mealTypes.map((mealType) => (
-                <button
-                  key={mealType.id}
-                  type="button"
-                  className={`option-card${mealType.id === mealTypeId ? " active" : ""}`}
-                  onClick={() => setMealTypeId(mealType.id)}
-                >
-                  <p className="option-title">{mealType.label}</p>
-                  <p className="option-copy">Pre-assigned rate per tiffin</p>
-                  <div className="option-metric">{formatINR(mealType.pricePerTiffin)}</div>
-                </button>
-              ))}
+            <div className="field">
+              <label className="field-label" htmlFor="plan-picker">
+                Subscription Plan
+              </label>
+              <select
+                id="plan-picker"
+                value={planId}
+                onChange={(event) => setPlanId(Number(event.target.value) || "")}
+                className="select-input text-lg py-3"
+              >
+                <option value="">Select a Plan</option>
+                {plans.map((plan) => (
+                  <option key={plan.id} value={plan.id}>
+                    {plan.name} — {plan.tiffin_count} Tiffins ({formatINR(plan.total_price)})
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
@@ -398,19 +352,15 @@ export default function CustomerOnboardingPanel({
               <div className="summary-grid">
                 <div className="summary-item">
                   <strong>Plan</strong>
-                  <span>{selection.template.label}</span>
+                  <span>{selection.name}</span>
                 </div>
                 <div className="summary-item">
-                  <strong>Meal type</strong>
-                  <span>{selection.mealType.label}</span>
-                </div>
-                <div className="summary-item">
-                  <strong>Rate</strong>
-                  <span>{formatINR(selection.pricePerTiffin)}</span>
+                  <strong>Tiffins</strong>
+                  <span>{selection.tiffin_count}</span>
                 </div>
                 <div className="summary-item">
                   <strong>Invoice total</strong>
-                  <span>{formatINR(selection.totalAmount)}</span>
+                  <span>{formatINR(selection.total_price)}</span>
                 </div>
               </div>
             </div>

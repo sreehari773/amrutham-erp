@@ -19,11 +19,10 @@ const DEMO_PREFIX = "AMRUTHAM_DEMO";
 type DailyMenuDraft = {
   date: string;
   breakfast: string;
-  veg: string;
-  nonVeg: string;
-  mixed: string;
-  addons: string;
-  notes: string;
+  lunchVeg: string;
+  lunchNonVeg: string;
+  dinnerVeg: string;
+  dinnerNonVeg: string;
 };
 
 type DirectoryRow = {
@@ -292,11 +291,10 @@ function emptyDailyMenu(date: string): DailyMenuDraft {
   return {
     date,
     breakfast: "",
-    veg: "",
-    nonVeg: "",
-    mixed: "",
-    addons: "",
-    notes: "",
+    lunchVeg: "",
+    lunchNonVeg: "",
+    dinnerVeg: "",
+    dinnerNonVeg: "",
   };
 }
 
@@ -311,8 +309,7 @@ export async function createCustomerWithSubscription(formData: FormData) {
     const phone = getRequiredString(formData, "phone", "Phone");
     const address = getOptionalString(formData, "address") ?? "";
     const paymentMode = getOptionalString(formData, "paymentMode") ?? "UPI";
-    const templateId = getRequiredString(formData, "templateId", "Subscription plan");
-    const mealTypeId = getRequiredString(formData, "mealTypeId", "Meal type");
+    const planId = getRequiredString(formData, "planId", "Subscription plan");
     const customStartDate = getOptionalString(formData, "customStartDate");
     const customInvoiceDate = getOptionalString(formData, "customInvoiceDate") ?? customStartDate;
     const deliveredTillDate = getOptionalNonNegativeInteger(
@@ -324,10 +321,17 @@ export async function createCustomerWithSubscription(formData: FormData) {
     const skipSaturday = formData.get("skipSaturday") === "true";
     const deliveryNotes = getOptionalString(formData, "deliveryNotes");
 
-    const { data: catalog } = await getSubscriptionCatalog();
-    const selection = resolveSubscriptionSelection(catalog, templateId, mealTypeId);
+    const { data: planData, error: planError } = await sb
+      .from("subscription_plans")
+      .select("tiffin_count, total_price")
+      .eq("id", Number(planId))
+      .single();
 
-    if (deliveredTillDate > selection.totalTiffins) {
+    if (planError || !planData) {
+      throw new Error(planError?.message || "Invalid Subscription Plan selected.");
+    }
+
+    if (deliveredTillDate > planData.tiffin_count) {
       throw new Error("Delivered till date cannot exceed the subscription tiffin count.");
     }
 
@@ -343,8 +347,7 @@ export async function createCustomerWithSubscription(formData: FormData) {
       p_name: name,
       p_phone: phone,
       p_address: address,
-      p_total_tiffins: selection.totalTiffins,
-      p_price_per_tiffin: selection.pricePerTiffin,
+      p_plan_id: Number(planId),
       p_payment_mode: paymentMode,
       p_custom_start_date: customStartDate,
       p_custom_invoice_date: customInvoiceDate,
@@ -380,10 +383,9 @@ export async function createCustomerWithSubscription(formData: FormData) {
         subscriptionId,
         customerName: name,
         phone,
-        templateId,
-        mealTypeId,
-        totalTiffins: selection.totalTiffins,
-        pricePerTiffin: selection.pricePerTiffin,
+        planId: Number(planId),
+        totalTiffins: planData.tiffin_count,
+        totalAmount: planData.total_price,
         deliveredTillDate,
       })
     );
@@ -399,8 +401,8 @@ export async function renewSubscription(formData: FormData) {
   try {
     const sb = getSupabaseAdmin();
     const oldSubId = Number.parseInt(getRequiredString(formData, "oldSubId", "Previous subscription ID"), 10);
-    const newTotalTiffins = Number.parseInt(
-      getRequiredString(formData, "newTotalTiffins", "New total tiffins"),
+    const planId = Number.parseInt(
+      getRequiredString(formData, "planId", "Renwal Plan ID"),
       10
     );
     const startDate = getOptionalString(formData, "startDate");
@@ -410,13 +412,13 @@ export async function renewSubscription(formData: FormData) {
       throw new Error("Previous subscription ID must be valid.");
     }
 
-    if (!Number.isFinite(newTotalTiffins) || newTotalTiffins <= 0) {
-      throw new Error("New total tiffins must be a positive whole number.");
+    if (!Number.isFinite(planId) || planId <= 0) {
+      throw new Error("Plan ID must be a positive whole number.");
     }
 
     const { data, error } = await sb.rpc("renew_subscription", {
       p_old_sub_id: oldSubId,
-      p_new_total_tiffins: newTotalTiffins,
+      p_plan_id: planId,
       p_start_date: startDate,
       p_payment_mode: paymentMode,
     });
@@ -844,11 +846,10 @@ export async function saveDailyMenu(input: DailyMenuDraft) {
     const payload = {
       date: input.date,
       breakfast: input.breakfast.trim(),
-      veg: input.veg.trim(),
-      nonVeg: input.nonVeg.trim(),
-      mixed: input.mixed.trim(),
-      addons: input.addons.trim(),
-      notes: input.notes.trim(),
+      lunchVeg: input.lunchVeg.trim(),
+      lunchNonVeg: input.lunchNonVeg.trim(),
+      dinnerVeg: input.dinnerVeg.trim(),
+      dinnerNonVeg: input.dinnerNonVeg.trim(),
       savedAt: new Date().toISOString(),
     };
 
@@ -1006,11 +1007,10 @@ export async function seedDemoData() {
     await saveDailyMenu({
       date: todayIST(),
       breakfast: "Moong chilla, chutney",
-      veg: "Phulka, jeera rice, paneer bhurji, dal tadka",
-      nonVeg: "Phulka, jeera rice, egg curry, dal tadka",
-      mixed: "Paneer bhurji or egg curry based on route list",
-      addons: "Salad cup, chaas",
-      notes: "Demo menu seeded from admin utility",
+      lunchVeg: "Phulka, jeera rice, paneer bhurji, dal tadka",
+      lunchNonVeg: "Phulka, jeera rice, egg curry, dal tadka",
+      dinnerVeg: "Roti, mix veg, dal makhani",
+      dinnerNonVeg: "Roti, chicken curry, dal makhani",
     });
 
     await insertSystemLog(
@@ -1057,6 +1057,169 @@ export async function getReturningCustomerSuggestion(customerId: number) {
         inferredSelection: inferPlanForRow(catalog, data as DirectoryRow),
       },
     };
+  } catch (error) {
+    return { error: toErrorMessage(error) };
+  }
+}
+
+// ============================================================================
+// Migrated from operational.ts
+// ============================================================================
+
+export async function getKOTForDate(targetDate: string) {
+  const sb = getSupabaseAdmin();
+
+  const { data, error } = await sb.rpc("get_kot_for_date", {
+    p_target_date: targetDate,
+  });
+
+  if (error) {
+    return { error: error.message, data: [] };
+  }
+
+  return { data: data ?? [] };
+}
+
+export async function skipDeliveryDays(subscriptionId: number, daysToSkip: number) {
+  const sb = getSupabaseAdmin();
+
+  // "Tomorrow" in local or UTC? We'll use simple Date math
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const pauseStart = tomorrow.toISOString().split("T")[0];
+
+  const end = new Date(tomorrow);
+  end.setDate(end.getDate() + daysToSkip);
+  const pauseEnd = end.toISOString().split("T")[0];
+
+  const { error: updateError } = await sb
+    .from("subscriptions")
+    .update({
+      pause_start: pauseStart,
+      pause_end: pauseEnd,
+    })
+    .eq("id", subscriptionId);
+
+  if (updateError) {
+    return { error: updateError.message };
+  }
+
+  // Log the action
+  const { error: logError } = await sb.from("system_logs").insert([
+    {
+      action_type: "SUBSCRIPTION_PAUSED",
+      description: "Subscription paused",
+      actor: "system",
+    },
+  ]);
+
+  if (logError) {
+    console.error("Failed to log pause action:", logError.message);
+  }
+
+  return { success: true };
+}
+
+export async function processDailyDeliveries(targetDate: string) {
+  const sb = getSupabaseAdmin();
+
+  const { data, error } = await sb.rpc("mark_today_delivered", {
+    p_target_date: targetDate,
+  });
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  return { success: true, count: data };
+}
+
+export async function quickRenewSubscription(subId: number) {
+  try {
+    const sb = getSupabaseAdmin();
+
+    const { data: sub, error: subError } = await sb
+      .from("subscriptions")
+      .select("plan_id")
+      .eq("id", subId)
+      .single();
+
+    if (subError || !sub) {
+      return { error: "Failed to find the original subscription details." };
+    }
+
+    const { data, error } = await sb.rpc("renew_subscription", {
+      p_old_sub_id: subId,
+      p_plan_id: sub.plan_id,
+      p_start_date: todayIST(),
+    });
+
+    if (error) {
+      return { error: error.message };
+    }
+
+    revalidateOperationalViews();
+    return { data };
+  } catch (error) {
+    return { error: toErrorMessage(error) };
+  }
+}
+
+export async function hardDeleteSubscription(subId: number) {
+  try {
+    const sb = getSupabaseAdmin();
+
+    const { error } = await sb.rpc("hard_delete_subscription", {
+      p_sub_id: subId,
+    });
+
+    if (error) {
+      return { error: error.message };
+    }
+
+    revalidateOperationalViews();
+    return { success: true };
+  } catch (error) {
+    return { error: toErrorMessage(error) };
+  }
+}
+
+export async function getCustomerInvoices(customerId: number) {
+  try {
+    const sb = getSupabaseAdmin();
+    const { data, error } = await sb
+      .from("invoices")
+      .select("id, invoice_number, amount, amount_paid, payment_status, invoice_date")
+      .eq("customer_id", customerId)
+      .order("invoice_date", { ascending: false });
+
+    if (error) return { error: error.message };
+    return { data };
+  } catch (error) {
+    return { error: toErrorMessage(error) };
+  }
+}
+
+export async function updateInvoicePayment(invoiceId: number, amountPaid: number) {
+  try {
+    const sb = getSupabaseAdmin();
+    
+    // Fetch the invoice first to determine status based on amountPaid vs total amount
+    const { data: inv, error: fetchErr } = await sb.from("invoices").select("amount").eq("id", invoiceId).single();
+    if (fetchErr || !inv) return { error: "Invoice not found." };
+    
+    let status = "Pending";
+    if (amountPaid >= inv.amount) status = "Paid";
+    else if (amountPaid > 0) status = "Partial";
+    
+    const { error } = await sb.from("invoices").update({
+      amount_paid: amountPaid,
+      payment_status: status
+    }).eq("id", invoiceId);
+
+    if (error) return { error: error.message };
+    revalidateOperationalViews();
+    return { success: true };
   } catch (error) {
     return { error: toErrorMessage(error) };
   }

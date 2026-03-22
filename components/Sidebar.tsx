@@ -32,6 +32,16 @@ const navigation = [
     ),
   },
   {
+    href: "/subscriptions",
+    title: "Subscriptions",
+    copy: "Manage active and paused plans",
+    icon: (
+      <svg className="side-link-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" />
+      </svg>
+    ),
+  },
+  {
     href: "/menus",
     title: "Menus",
     copy: "Plan the day across veg and non-veg runs",
@@ -42,16 +52,6 @@ const navigation = [
         <path d="M17 3v18" />
         <path d="M4 8h16" />
         <path d="M4 13h16" />
-      </svg>
-    ),
-  },
-  {
-    href: "/operations",
-    title: "Operations",
-    copy: "Forecast, manifest, reconciliation",
-    icon: (
-      <svg className="side-link-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
       </svg>
     ),
   },
@@ -83,7 +83,9 @@ export default function Sidebar() {
         </div>
       </div>
 
-      <QuickSearch />
+      <div style={{ marginBottom: "20px", marginTop: "4px" }}>
+        <QuickSearch />
+      </div>
 
       <nav className="side-nav">
         <div className="side-nav-group">
@@ -109,8 +111,8 @@ export default function Sidebar() {
         </div>
 
         <div className="side-nav-group">
-          <p className="side-nav-label">Exports</p>
-          <a className="side-link" href="/api/export/invoices">
+          <p className="side-nav-label">Reports</p>
+          <Link href="/reports" className={`side-link${pathname === "/reports" ? " active" : ""}`}>
             <svg className="side-link-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
               <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
               <polyline points="14 2 14 8 20 8" />
@@ -118,10 +120,10 @@ export default function Sidebar() {
               <path d="m9 15 3 3 3-3" />
             </svg>
             <div className="side-link-copy">
-              <span className="side-link-title">Invoice Export</span>
-              <small>Download the billing ledger as CSV</small>
+              <span className="side-link-title">Reports & Exports</span>
+              <small>Custom generated CSV ledgers</small>
             </div>
-          </a>
+          </Link>
         </div>
       </nav>
 
@@ -134,6 +136,24 @@ export default function Sidebar() {
           <span>Subscription values, logs and sample data</span>
         </div>
       </Link>
+
+      <button
+        className="side-link"
+        style={{
+          width: "100%",
+          justifyContent: "center",
+          marginTop: "8px",
+          color: "var(--text-soft)",
+          background: "rgba(255, 255, 255, 0.03)",
+        }}
+      >
+        <svg className="side-link-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+          <polyline points="16 17 21 12 16 7" />
+          <line x1="21" y1="12" x2="9" y2="12" />
+        </svg>
+        <span className="side-link-title" style={{ fontSize: "13px" }}>Sign Out</span>
+      </button>
     </aside>
   );
 }

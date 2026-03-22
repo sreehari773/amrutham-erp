@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { markTodayDelivered } from "@/app/actions/deductions";
+import { getSupabaseAdmin } from "@/lib/supabase";
 import { todayIST } from "@/lib/utils";
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs = 20000): Promise<T> {
@@ -61,6 +62,43 @@ export default function DashboardActions() {
     }
   }
 
+  async function handleMarkHoliday() {
+    if (!window.confirm(`Mark ${date} as a Holiday? This will pause all active subscriptions for just this day.`)) {
+      return;
+    }
+
+    setLoading(true);
+    setMessage(null);
+
+    try {
+      // Small server action to bulk pause subscriptions for a day
+      const res = await fetch("/api/admin/holiday", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date }),
+      });
+      
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to mark holiday");
+      }
+
+      router.refresh();
+      setMessage({
+        type: "success",
+        text: `Successfully marked ${date} as a holiday for ${data.count} subscriptions.`,
+      });
+    } catch (error) {
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Unable to process the holiday action.",
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <section className="panel">
       <div className="panel-header">
@@ -93,9 +131,9 @@ export default function DashboardActions() {
           <button type="button" className="btn-primary" onClick={handleBulkDeduct} disabled={loading}>
             {loading ? "Processing dispatch..." : "Mark Delivered"}
           </button>
-          <a href="/menus" className="btn-secondary">
-            Review today&apos;s menu
-          </a>
+          <button type="button" className="btn-danger" onClick={handleMarkHoliday} disabled={loading}>
+            {loading ? "Processing..." : "Mark as Holiday"}
+          </button>
         </div>
 
         {message ? (

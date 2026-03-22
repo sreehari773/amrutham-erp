@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx next:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git config:*)",
+      "Bash(gh auth:*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "Bash(git checkout:*)",
+      "Bash(export GIT_DIR=C:/Users/sreeh/Desktop/amrutham/.git GIT_WORK_TREE=C:/Users/sreeh/Desktop/amrutham)"
+    ]
+  }
+}

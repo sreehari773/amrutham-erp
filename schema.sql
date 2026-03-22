@@ -20,9 +20,20 @@ CREATE TABLE customers (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE subscription_plans (
+  id              BIGSERIAL PRIMARY KEY,
+  name            TEXT NOT NULL,
+  tiffin_count    INT NOT NULL CHECK (tiffin_count > 0),
+  total_price     NUMERIC(10,2) NOT NULL CHECK (total_price >= 0),
+  delivery_charge NUMERIC(10,2) NOT NULL DEFAULT 40,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE subscriptions (
 CREATE TABLE subscriptions (
   id                BIGSERIAL PRIMARY KEY,
   customer_id       BIGINT NOT NULL REFERENCES customers(id),
+  plan_id           BIGINT NOT NULL REFERENCES subscription_plans(id),
   total_tiffins     INT NOT NULL CHECK (total_tiffins > 0),
   remaining_tiffins INT NOT NULL CHECK (remaining_tiffins >= 0),
   price_per_tiffin  NUMERIC(10,2) NOT NULL CHECK (price_per_tiffin >= 0),
@@ -158,8 +169,7 @@ CREATE OR REPLACE FUNCTION create_customer_with_subscription(
   p_name TEXT,
   p_phone TEXT,
   p_address TEXT,
-  p_total_tiffins INT,
-  p_price_per_tiffin NUMERIC,
+  p_plan_id BIGINT,
   p_payment_mode payment_mode_enum DEFAULT 'UPI',
   p_custom_start_date DATE DEFAULT NULL,
   p_custom_invoice_date DATE DEFAULT NULL,
@@ -173,14 +183,21 @@ AS $$
 DECLARE
   v_customer_id BIGINT;
   v_sub_id BIGINT;
-  v_total NUMERIC;
+  v_plan RECORD;
+  v_price_per_tiffin NUMERIC;
   v_inv_num TEXT;
   v_start DATE;
   v_inv_date DATE;
 BEGIN
   v_start := COALESCE(p_custom_start_date, CURRENT_DATE);
   v_inv_date := COALESCE(p_custom_invoice_date, CURRENT_DATE);
-  v_total := p_total_tiffins * p_price_per_tiffin;
+
+  SELECT * INTO v_plan FROM subscription_plans WHERE id = p_plan_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Subscription Plan % not found', p_plan_id;
+  END IF;
+
+  v_price_per_tiffin := (v_plan.total_price - v_plan.delivery_charge) / v_plan.tiffin_count;
 
   -- Upsert customer
   INSERT INTO customers (name, phone, address)
@@ -192,12 +209,12 @@ BEGIN
 
   -- Insert subscription (unique partial index blocks duplicate actives)
   INSERT INTO subscriptions (
-    customer_id, total_tiffins, remaining_tiffins,
+    customer_id, plan_id, total_tiffins, remaining_tiffins,
     price_per_tiffin, total_amount, start_date,
     meal_preference, skip_saturday, delivery_notes
   ) VALUES (
-    v_customer_id, p_total_tiffins, p_total_tiffins,
-    p_price_per_tiffin, v_total, v_start,
+    v_customer_id, p_plan_id, v_plan.tiffin_count, v_plan.tiffin_count,
+    v_price_per_tiffin, v_plan.total_price, v_start,
     p_meal_preference, p_skip_saturday, p_delivery_notes
   ) RETURNING id INTO v_sub_id;
 
@@ -205,20 +222,20 @@ BEGIN
   v_inv_num := generate_invoice_number(v_inv_date);
 
   INSERT INTO invoices (subscription_id, invoice_number, amount, payment_mode, invoice_date)
-  VALUES (v_sub_id, v_inv_num, v_total, p_payment_mode, v_inv_date);
+  VALUES (v_sub_id, v_inv_num, v_plan.total_price, p_payment_mode, v_inv_date);
 
   -- Log
   INSERT INTO system_logs (action_type, description, actor)
   VALUES ('SUBSCRIPTION_CREATED',
     'Sub #' || v_sub_id || ' for customer ' || p_name || ' (' || p_phone || '), '
-    || p_total_tiffins || ' tiffins @ ₹' || p_price_per_tiffin,
+    || v_plan.name,
     'admin');
 
   RETURN json_build_object(
     'customer_id', v_customer_id,
     'subscription_id', v_sub_id,
     'invoice_number', v_inv_num,
-    'total_amount', v_total
+    'total_amount', v_plan.total_price
   );
 END;
 $$;
@@ -226,7 +243,7 @@ $$;
 -- RPC 2: renew_subscription
 CREATE OR REPLACE FUNCTION renew_subscription(
   p_old_sub_id BIGINT,
-  p_new_total_tiffins INT,
+  p_plan_id BIGINT,
   p_start_date DATE DEFAULT CURRENT_DATE,
   p_payment_mode payment_mode_enum DEFAULT 'UPI'
 )
@@ -235,8 +252,9 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
   v_old RECORD;
+  v_plan RECORD;
+  v_price_per_tiffin NUMERIC;
   v_new_sub_id BIGINT;
-  v_total NUMERIC;
   v_inv_num TEXT;
 BEGIN
   SELECT * INTO v_old FROM subscriptions WHERE id = p_old_sub_id FOR UPDATE;
@@ -244,31 +262,35 @@ BEGIN
     RAISE EXCEPTION 'Subscription % not found', p_old_sub_id;
   END IF;
 
-  v_total := p_new_total_tiffins * v_old.price_per_tiffin;
+  SELECT * INTO v_plan FROM subscription_plans WHERE id = p_plan_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Subscription Plan % not found', p_plan_id;
+  END IF;
+
+  v_price_per_tiffin := (v_plan.total_price - v_plan.delivery_charge) / v_plan.tiffin_count;
 
   INSERT INTO subscriptions (
-    customer_id, total_tiffins, remaining_tiffins,
+    customer_id, plan_id, total_tiffins, remaining_tiffins,
     price_per_tiffin, total_amount, start_date
   ) VALUES (
-    v_old.customer_id, p_new_total_tiffins, p_new_total_tiffins,
-    v_old.price_per_tiffin, v_total, p_start_date
+    v_old.customer_id, p_plan_id, v_plan.tiffin_count, v_plan.tiffin_count,
+    v_price_per_tiffin, v_plan.total_price, p_start_date
   ) RETURNING id INTO v_new_sub_id;
 
   v_inv_num := generate_invoice_number(p_start_date);
 
   INSERT INTO invoices (subscription_id, invoice_number, amount, payment_mode, invoice_date)
-  VALUES (v_new_sub_id, v_inv_num, v_total, p_payment_mode, p_start_date);
+  VALUES (v_new_sub_id, v_inv_num, v_plan.total_price, p_payment_mode, p_start_date);
 
   INSERT INTO system_logs (action_type, description, actor)
   VALUES ('SUBSCRIPTION_RENEWED',
-    'Renewed from Sub #' || p_old_sub_id || ' → Sub #' || v_new_sub_id
-    || ', ' || p_new_total_tiffins || ' tiffins',
+    'Renewed from Sub #' || p_old_sub_id || ' → ' || v_plan.name || ' (Sub #' || v_new_sub_id || ')',
     'admin');
 
   RETURN json_build_object(
     'new_subscription_id', v_new_sub_id,
     'invoice_number', v_inv_num,
-    'total_amount', v_total
+    'total_amount', v_plan.total_price
   );
 END;
 $$;
@@ -568,6 +590,23 @@ CREATE TABLE menu_schedule (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(day_of_week, meal_slot, effective_from)
 );
+
+-- New fixed Weekly Menus table
+CREATE TABLE weekly_menus (
+  day_of_week         TEXT PRIMARY KEY,
+  veg_description     TEXT NOT NULL DEFAULT '',
+  non_veg_description TEXT NOT NULL DEFAULT '',
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO weekly_menus (day_of_week, veg_description, non_veg_description) VALUES
+  ('Monday', 'Paneer Butter Masala, Roti, Rice, Dal, Salad', 'Butter Chicken, Roti, Rice, Dal, Salad'),
+  ('Tuesday', 'Aloo Gobi, Roti, Rice, Dal, Salad', 'Chicken Curry, Roti, Rice, Dal, Salad'),
+  ('Wednesday', 'Mix Veg, Roti, Rice, Dal, Salad', 'Egg Curry, Roti, Rice, Dal, Salad'),
+  ('Thursday', 'Palak Paneer, Roti, Rice, Dal, Salad', 'Mutton Curry, Roti, Rice, Dal, Salad'),
+  ('Friday', 'Bhindi Masala, Roti, Rice, Dal, Salad', 'Fish Curry, Roti, Rice, Dal, Salad'),
+  ('Saturday', 'Chole Bhature, Rice, Salad', 'Chicken Biryani, Raita, Salad')
+ON CONFLICT (day_of_week) DO NOTHING;
 
 -- Kitchen forecast for production planning
 CREATE TABLE kitchen_forecast (

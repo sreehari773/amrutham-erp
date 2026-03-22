@@ -97,7 +97,7 @@ button {
 .shell-main {
   flex: 1;
   min-width: 0;
-  padding: 28px;
+  padding: 48px;
 }
 
 .shell-inner {
@@ -108,16 +108,16 @@ button {
 .side-shell {
   position: sticky;
   top: 0;
-  width: 292px;
+  width: 320px;
   height: 100vh;
-  padding: 22px 18px 18px;
+  padding: 32px 24px 24px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
   background:
     radial-gradient(circle at top, rgba(24, 182, 135, 0.24), transparent 30%),
     linear-gradient(180deg, #081627 0%, #091b2d 100%);
   border-right: 1px solid var(--sidebar-border);
+  overflow: hidden; /* Prevent shell itself from scrolling */
 }
 
 .side-brand {
@@ -208,8 +208,11 @@ button {
   padding: 2px 8px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  font-size: 11px;
+  font-size: 10px;
   color: var(--sidebar-text);
+  background: rgba(255, 255, 255, 0.05);
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 .search-popover {
@@ -268,8 +271,28 @@ button {
 .side-nav {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  min-height: 0;
+  gap: 22px;
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 4px;
+  margin-right: -4px;
+}
+
+.side-nav::-webkit-scrollbar {
+  width: 5px;
+}
+
+.side-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.side-nav::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+
+.side-nav::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
 }
 
 .side-nav-group {
@@ -343,7 +366,8 @@ button {
 }
 
 .side-footer-card {
-  margin-top: auto;
+  margin-top: 12px;
+  margin-bottom: 12px;
   display: flex;
   align-items: center;
   gap: 12px;

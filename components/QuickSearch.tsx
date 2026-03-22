@@ -109,6 +109,7 @@ export default function QuickSearch() {
         }}
         placeholder="Quick search customers or pages"
         className="side-search-input"
+        style={{ paddingRight: "70px" }}
       />
       <span className="side-kbd">Ctrl K</span>
 
