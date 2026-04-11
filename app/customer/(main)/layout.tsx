@@ -1,6 +1,6 @@
 import { ReactNode } from "react";
 import Link from "next/link";
-import "./customer.css"; // We will create this local css for mobile styling
+import "../customer.css"; // We will create this local css for mobile styling
 
 export default function CustomerLayout({ children }: { children: ReactNode }) {
   return (
