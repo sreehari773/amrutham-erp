@@ -14,6 +14,9 @@ export type SubscriptionPlan = {
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
+    if (error.message.includes("fetch failed") || error.message.includes("ENOTFOUND")) {
+      return "Database connection failed: Your Supabase project appears to be paused or the NEXT_PUBLIC_SUPABASE_URL is incorrectly configured on Vercel.";
+    }
     return error.message;
   }
   return "Something went wrong. Please try again.";
