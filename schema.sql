@@ -14,9 +14,11 @@ CREATE TYPE payment_mode_enum AS ENUM ('UPI', 'Cash', 'Card', 'Bank Transfer');
 
 CREATE TABLE customers (
   id         BIGSERIAL PRIMARY KEY,
+  user_id    UUID, -- References auth.users(id) in Supabase
   name       TEXT NOT NULL,
   phone      TEXT NOT NULL UNIQUE,
   address    TEXT,
+  app_password TEXT, -- For custom mobile app authentication
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -671,6 +673,23 @@ CREATE TABLE messaging_events (
 );
 CREATE INDEX idx_messaging_sub ON messaging_events(subscription_id);
 CREATE INDEX idx_messaging_type ON messaging_events(event_type);
+
+-- Customer renewal requests for manual UPI verification
+CREATE TYPE renewal_status AS ENUM ('Pending', 'Verified', 'Rejected');
+
+CREATE TABLE renewal_requests (
+  id              BIGSERIAL PRIMARY KEY,
+  subscription_id BIGINT NOT NULL REFERENCES subscriptions(id),
+  customer_id     BIGINT NOT NULL REFERENCES customers(id),
+  plan_id         BIGINT NOT NULL REFERENCES subscription_plans(id),
+  utr_number      TEXT NOT NULL,
+  status          renewal_status NOT NULL DEFAULT 'Pending',
+  admin_notes     TEXT,
+  submitted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolved_at     TIMESTAMPTZ
+);
+
+CREATE INDEX idx_renewal_requests_status ON renewal_requests(status);
 
 -- ============================================================
 -- 7. OPERATIONS LAYER RPCs

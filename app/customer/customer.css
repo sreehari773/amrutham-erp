@@ -1,0 +1,17 @@
+.customer-app-container {
+  /* Override the generic app body styling for pure mobile view */
+  background: var(--surface);
+}
+
+.safe-area-pb {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Hide scrollbar for clean PWA feel */
+.customer-app-container ::-webkit-scrollbar {
+  display: none;
+}
+.customer-app-container {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
