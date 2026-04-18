@@ -60,8 +60,8 @@ BEGIN
   -- Generate invoice
   v_inv_num := generate_invoice_number(v_inv_date);
 
-  INSERT INTO invoices (subscription_id, invoice_number, amount, payment_mode, invoice_date)
-  VALUES (v_sub_id, v_inv_num, v_plan.total_price, p_payment_mode, v_inv_date);
+  INSERT INTO invoices (subscription_id, customer_id, invoice_number, amount, payment_mode, invoice_date)
+  VALUES (v_sub_id, v_customer_id, v_inv_num, v_plan.total_price, p_payment_mode, v_inv_date);
 
   -- Log
   INSERT INTO system_logs (action_type, description, actor)

@@ -25,7 +25,7 @@ export default function ReportsPage() {
     <div className="page-shell">
       <div className="page-header">
         <h1 className="page-title">Reports & Exports</h1>
-        <p className="page-copy">Generate customized billing ledgers and CSV exports.</p>
+        <p className="page-copy">Generate customized billing ledgers and Excel exports.</p>
       </div>
 
       <div className="card space-y-6" style={{ maxWidth: 600 }}>
@@ -33,7 +33,7 @@ export default function ReportsPage() {
           <h2 className="text-lg font-semibold mb-4">Invoice Ledger Export</h2>
           <p className="text-sm text-gray-400 mb-6">
             Filter invoices by date range, specific month, or a particular customer. 
-            The exported CSV is specially formatted to ensure compatibility with Microsoft Excel.
+            The exported workbook is delivered as an Excel file ready for sharing.
           </p>
         </div>
 
@@ -86,7 +86,7 @@ export default function ReportsPage() {
             className="btn-primary"
             style={{ minWidth: 150 }}
           >
-            Download CSV
+            Download Excel
           </button>
         </div>
       </div>

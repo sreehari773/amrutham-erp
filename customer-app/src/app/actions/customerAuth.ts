@@ -26,12 +26,12 @@ export async function customerLogin(phone: string, password: string) {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 60 * 60 * 24 * 30, // 30 days
+      maxAge: 60 * 60 * 24 * 365 * 10, // 10 years (never auto log out)
       path: "/",
     });
     
     return { success: true };
-  } catch (err: any) {
+  } catch {
     return { error: "An unexpected error occurred. Please try again." };
   }
 }

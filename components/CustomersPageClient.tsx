@@ -60,7 +60,7 @@ export default function CustomersPageClient({
   const [plans, setPlans] = useState<SubscriptionPlan[]>(subscriptionPlans);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(initialError);
-  const [activeTab, setActiveTab] = useState<"Active" | "Inactive">("Active");
+  const [activeTab, setActiveTab] = useState<"Active" | "Paused" | "Inactive">("Active");
   const [search, setSearch] = useState(searchParams.get("q") ?? "");
   const [selectedCustomer, setSelectedCustomer] = useState<SubscriptionRow | null>(null);
 
@@ -89,11 +89,16 @@ export default function CustomersPageClient({
     const query = search.trim().toLowerCase();
 
     return subs.filter((subscription) => {
-      // Tab filtering
-      const isActiveTab = activeTab === "Active";
-      const isSubActive = subscription.status === "Active";
-      
-      if (isActiveTab !== isSubActive) {
+      const isPaused = Boolean(subscription.pause_start);
+      const isActive = subscription.status === "Active";
+      const matchesTab =
+        activeTab === "Paused"
+          ? isActive && isPaused
+          : activeTab === "Active"
+            ? isActive && !isPaused
+            : !isActive;
+
+      if (!matchesTab) {
         return false;
       }
 
@@ -110,7 +115,9 @@ export default function CustomersPageClient({
 
   const counts = {
     all: subs.length,
-    Active: subs.filter((item) => item.status === "Active").length,
+    Active: subs.filter((item) => item.status === "Active" && !item.pause_start).length,
+    Paused: subs.filter((item) => item.status === "Active" && item.pause_start).length,
+    Inactive: subs.filter((item) => item.status !== "Active").length,
   };
 
   return (
@@ -126,6 +133,7 @@ export default function CustomersPageClient({
         <div className="hero-chip-row">
           <div className="chip">Total records {counts.all}</div>
           <div className="chip">Active {counts.Active}</div>
+          <div className="chip">Paused {counts.Paused}</div>
           <div className="chip">Returning customers {directory.length}</div>
         </div>
       </section>
@@ -163,6 +171,14 @@ export default function CustomersPageClient({
             Active Customers
           </button>
           <button
+            onClick={() => setActiveTab("Paused")}
+            className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === "Paused" ? "border-black text-black" : "border-transparent text-gray-500 hover:text-black"
+            }`}
+          >
+            Paused Customers
+          </button>
+          <button
             onClick={() => setActiveTab("Inactive")}
             className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
               activeTab === "Inactive" ? "border-black text-black" : "border-transparent text-gray-500 hover:text-black"
@@ -183,6 +199,17 @@ export default function CustomersPageClient({
                 <div>
                   <strong className="block text-base">{subscription.name}</strong>
                   <span className="text-sm text-gray-500">{subscription.phone}</span>
+                  <span className="block text-xs text-gray-500 mt-1">
+                    Customer #{subscription.customer_id} | Subscription #{subscription.subscription_id}
+                  </span>
+                  <span className="block text-xs text-gray-500 mt-1">
+                    Bought {subscription.total_tiffins} tiffins, {subscription.remaining_tiffins} left
+                  </span>
+                  {subscription.pause_start ? (
+                    <span className="block text-xs text-amber-700 mt-1">
+                      Paused from {subscription.pause_start}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="text-right flex items-center gap-3">
                   {subscription.pause_start ? <div className="badge badge-paused">Paused</div> : null}

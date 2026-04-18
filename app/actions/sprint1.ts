@@ -39,6 +39,9 @@ type DirectoryRow = {
   created_at: string;
 };
 
+const WEEKDAY_SET = new Set([0, 1, 2, 3, 4, 5, 6]);
+const WEEKDAY_LABELS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
+
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
     return error.message;
@@ -84,6 +87,52 @@ function getOptionalNonNegativeInteger(formData: FormData, key: string, label: s
   return parsed;
 }
 
+function parseSkipWeekdays(value: string | null): number[] {
+  if (!value) {
+    return [];
+  }
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("Weekday skip settings are invalid.");
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error("Weekday skip settings must be a list.");
+  }
+
+  const normalized = Array.from(
+    new Set(
+      parsed.map((item) => Number.parseInt(String(item), 10)).filter((item) => WEEKDAY_SET.has(item))
+    )
+  ).sort((left, right) => left - right);
+
+  if (normalized.length !== parsed.length) {
+    throw new Error("Weekday skip settings contain an invalid day.");
+  }
+
+  return normalized;
+}
+
+function normalizeSkipWeekdays(skipWeekdays: number[]): number[] {
+  const normalized = Array.from(
+    new Set(
+      skipWeekdays
+        .map((item) => Number.parseInt(String(item), 10))
+        .filter((item) => WEEKDAY_SET.has(item))
+    )
+  ).sort((left, right) => left - right);
+
+  if (normalized.length !== skipWeekdays.length) {
+    throw new Error("Weekday skip settings contain an invalid day.");
+  }
+
+  return normalized;
+}
+
 function revalidateOperationalViews() {
   revalidatePath("/");
   revalidatePath("/customers");
@@ -124,19 +173,26 @@ function shiftDate(value: string, offsetDays: number) {
   return isoFromDate(date);
 }
 
-function enumerateDeliveryDates(startDate: string, deliveredTillDate: number) {
+function enumerateDeliveryDates(startDate: string, deliveredTillDate: number, skipWeekdays: number[] = []) {
   if (deliveredTillDate <= 0) {
     return [];
   }
 
   const today = todayIST();
   const dates: string[] = [];
+  const blockedDays = new Set(skipWeekdays);
+  let cursor = 0;
 
-  for (let index = 0; index < deliveredTillDate; index += 1) {
-    const targetDate = shiftDate(startDate, index);
+  while (dates.length < deliveredTillDate) {
+    const targetDate = shiftDate(startDate, cursor);
+    cursor += 1;
 
     if (targetDate > today) {
-      throw new Error("Delivered till date cannot exceed the actual number of calendar days elapsed.");
+      throw new Error("Delivered till date cannot exceed the actual number of eligible delivery days elapsed.");
+    }
+
+    if (blockedDays.has(new Date(`${targetDate}T00:00:00+05:30`).getDay())) {
+      continue;
     }
 
     dates.push(targetDate);
@@ -147,6 +203,73 @@ function enumerateDeliveryDates(startDate: string, deliveredTillDate: number) {
 
 function sanitizeLikeQuery(query: string) {
   return query.replace(/[%_]/g, "").trim();
+}
+
+function matchesPauseWindow(targetDate: string, pauseStart: string | null, pauseEnd: string | null) {
+  if (!pauseStart) {
+    return false;
+  }
+
+  const effectiveEnd = pauseEnd ?? pauseStart;
+  return targetDate >= pauseStart && targetDate <= effectiveEnd;
+}
+
+function getWeekdayForIsoDate(targetDate: string) {
+  return new Date(`${targetDate}T00:00:00+05:30`).getDay();
+}
+
+function getDeliveryBlockedReason(subscription: {
+  status: string | null;
+  start_date: string | null;
+  remaining_tiffins: number | null;
+  pause_start: string | null;
+  pause_end: string | null;
+  skip_saturday?: boolean | null;
+  skip_weekdays?: number[] | null;
+}, targetDate: string) {
+  if (!subscription.start_date || targetDate < subscription.start_date) {
+    return "Subscription has not started yet.";
+  }
+
+  if (!["Active", "Grace"].includes(subscription.status ?? "")) {
+    return `Subscription is ${subscription.status ?? "inactive"}.`;
+  }
+
+  if (Number(subscription.remaining_tiffins ?? 0) <= 0) {
+    return "No remaining tiffins.";
+  }
+
+  if (matchesPauseWindow(targetDate, subscription.pause_start, subscription.pause_end)) {
+    return "Paused on this date.";
+  }
+
+  const targetDay = getWeekdayForIsoDate(targetDate);
+  const skipWeekdays = subscription.skip_weekdays ?? [];
+
+  if ((subscription.skip_saturday && targetDay === 6) || skipWeekdays.includes(targetDay)) {
+    return `${WEEKDAY_LABELS[targetDay]} is configured as a skipped day.`;
+  }
+
+  return null;
+}
+
+function getNextEligibleDeliveryDate(subscription: {
+  status: string | null;
+  start_date: string | null;
+  remaining_tiffins: number | null;
+  pause_start: string | null;
+  pause_end: string | null;
+  skip_saturday?: boolean | null;
+  skip_weekdays?: number[] | null;
+}, fromDate: string) {
+  for (let offset = 0; offset < 45; offset += 1) {
+    const targetDate = shiftDate(fromDate, offset);
+    if (!getDeliveryBlockedReason(subscription, targetDate)) {
+      return targetDate;
+    }
+  }
+
+  return null;
 }
 
 function normalizeTemplates(value: unknown): SubscriptionTemplate[] {
@@ -318,7 +441,8 @@ export async function createCustomerWithSubscription(formData: FormData) {
       "Delivered till date"
     );
     const mealPreference = getOptionalString(formData, "mealPreference") ?? "veg";
-    const skipSaturday = formData.get("skipSaturday") === "true";
+    const skipWeekdays = parseSkipWeekdays(getOptionalString(formData, "skipWeekdays"));
+    const skipSaturday = skipWeekdays.includes(6) || formData.get("skipSaturday") === "true";
     const deliveryNotes = getOptionalString(formData, "deliveryNotes");
 
     const { data: planData, error: planError } = await sb
@@ -341,7 +465,7 @@ export async function createCustomerWithSubscription(formData: FormData) {
       throw new Error("Future subscriptions cannot already have delivered tiffins.");
     }
 
-    const backfillDates = enumerateDeliveryDates(effectiveStartDate, deliveredTillDate);
+    const backfillDates = enumerateDeliveryDates(effectiveStartDate, deliveredTillDate, skipWeekdays);
 
     const { data, error } = await sb.rpc("create_customer_with_subscription", {
       p_name: name,
@@ -353,6 +477,7 @@ export async function createCustomerWithSubscription(formData: FormData) {
       p_custom_invoice_date: customInvoiceDate,
       p_meal_preference: mealPreference,
       p_skip_saturday: skipSaturday,
+      p_skip_weekdays: skipWeekdays,
       p_delivery_notes: deliveryNotes,
     });
 
@@ -387,6 +512,7 @@ export async function createCustomerWithSubscription(formData: FormData) {
         totalTiffins: planData.tiffin_count,
         totalAmount: planData.total_price,
         deliveredTillDate,
+        skipWeekdays,
       })
     );
 
@@ -405,7 +531,7 @@ export async function renewSubscription(formData: FormData) {
       getRequiredString(formData, "planId", "Renwal Plan ID"),
       10
     );
-    const startDate = getOptionalString(formData, "startDate");
+    const startDate = getOptionalString(formData, "startDate") ?? todayIST();
     const paymentMode = getOptionalString(formData, "paymentMode") ?? "UPI";
 
     if (!Number.isFinite(oldSubId) || oldSubId <= 0) {
@@ -779,6 +905,109 @@ export async function updateSubscriptionAssignment(input: {
         totalTiffins: selection.totalTiffins,
         remainingTiffins,
         totalAmount: selection.totalAmount,
+      },
+    };
+  } catch (error) {
+    return { error: toErrorMessage(error) };
+  }
+}
+
+export async function updateSubscriptionWeekdaySkips(subId: number, skipWeekdays: number[]) {
+  try {
+    const sb = getSupabaseAdmin();
+    const normalizedWeekdays = normalizeSkipWeekdays(skipWeekdays);
+
+    const { data: subRow, error: subError } = await sb
+      .from("subscriptions")
+      .select("id, status")
+      .eq("id", subId)
+      .maybeSingle();
+
+    if (subError || !subRow) {
+      return { error: subError?.message ?? "Subscription not found." };
+    }
+
+    if (!["Active", "Grace"].includes(subRow.status ?? "")) {
+      return { error: "Only active or grace subscriptions can have weekday rules updated." };
+    }
+
+    const { error: updateError } = await sb
+      .from("subscriptions")
+      .update({
+        skip_weekdays: normalizedWeekdays,
+        skip_saturday: normalizedWeekdays.includes(6),
+      })
+      .eq("id", subId);
+
+    if (updateError) {
+      return { error: updateError.message };
+    }
+
+    await insertSystemLog(
+      "SUBSCRIPTION_SKIP_WEEKDAYS_UPDATED",
+      JSON.stringify({
+        subscriptionId: subId,
+        skipWeekdays: normalizedWeekdays,
+      })
+    );
+
+    revalidateOperationalViews();
+    return { data: { skipWeekdays: normalizedWeekdays } };
+  } catch (error) {
+    return { error: toErrorMessage(error) };
+  }
+}
+
+export async function getSubscriptionDeliverySummary(subId: number) {
+  try {
+    const sb = getSupabaseAdmin();
+    const today = todayIST();
+
+    const { data: subscription, error: subscriptionError } = await sb
+      .from("subscriptions")
+      .select("id, customer_id, status, start_date, pause_start, pause_end, remaining_tiffins, total_tiffins, skip_saturday, skip_weekdays")
+      .eq("id", subId)
+      .maybeSingle();
+
+    if (subscriptionError || !subscription) {
+      return { error: subscriptionError?.message ?? "Subscription not found." };
+    }
+
+    const [{ count: deliveryCount, error: countError }, { data: latestDelivery, error: latestError }] =
+      await Promise.all([
+        sb
+          .from("deliveries")
+          .select("id", { count: "exact", head: true })
+          .eq("subscription_id", subId),
+        sb
+          .from("deliveries")
+          .select("delivery_date")
+          .eq("subscription_id", subId)
+          .order("delivery_date", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
+
+    if (countError || latestError) {
+      return { error: countError?.message ?? latestError?.message ?? "Unable to load delivery history." };
+    }
+
+    const blockedReason = getDeliveryBlockedReason(subscription, today);
+    const nextEligibleDate = getNextEligibleDeliveryDate(subscription, today);
+
+    return {
+      data: {
+        customerId: subscription.customer_id,
+        subscriptionId: subscription.id,
+        pauseStart: subscription.pause_start,
+        pauseEnd: subscription.pause_end,
+        isPausedToday: matchesPauseWindow(today, subscription.pause_start, subscription.pause_end),
+        skipWeekdays: normalizeSkipWeekdays(subscription.skip_weekdays ?? (subscription.skip_saturday ? [6] : [])),
+        deliveryCount: deliveryCount ?? 0,
+        lastDeliveryDate: latestDelivery?.delivery_date ?? null,
+        blockedReason,
+        nextEligibleDate,
+        isEligibleToday: blockedReason == null,
       },
     };
   } catch (error) {

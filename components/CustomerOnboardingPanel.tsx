@@ -6,6 +6,16 @@ import {
 import type { SubscriptionPlan } from "@/app/actions/plans";
 import { formatINR, todayIST } from "@/lib/utils";
 
+const WEEKDAY_OPTIONS = [
+  { value: 0, label: "Sunday" },
+  { value: 1, label: "Monday" },
+  { value: 2, label: "Tuesday" },
+  { value: 3, label: "Wednesday" },
+  { value: 4, label: "Thursday" },
+  { value: 5, label: "Friday" },
+  { value: 6, label: "Saturday" },
+];
+
 type DirectoryEntry = {
   customer_id: number;
   name: string;
@@ -45,7 +55,7 @@ export default function CustomerOnboardingPanel({
   const [customStartDate, setCustomStartDate] = useState(todayIST());
   const [deliveredTillDate, setDeliveredTillDate] = useState("0");
   const [mealPreference, setMealPreference] = useState("veg");
-  const [skipSaturday, setSkipSaturday] = useState(false);
+  const [skipWeekdays, setSkipWeekdays] = useState<number[]>([]);
   const [deliveryNotes, setDeliveryNotes] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -133,6 +143,39 @@ export default function CustomerOnboardingPanel({
     return plans.find(p => p.id === planId) ?? null;
   }, [plans, planId]);
 
+  async function downloadBillingExcel(customerId: number, startDate: string, endDate: string) {
+    const params = new URLSearchParams({
+      customerId: String(customerId),
+      startDate,
+      endDate,
+    });
+
+    const response = await fetch(`/api/export/invoices_v2?${params.toString()}`);
+
+    if (!response.ok) {
+      let message = "Failed to download the billing Excel file.";
+
+      try {
+        const payload = await response.json();
+        if (payload?.error) {
+          message = payload.error;
+        }
+      } catch {}
+
+      throw new Error(message);
+    }
+
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `billing-${customerId}-${startDate}-to-${endDate}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  }
+
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLoading(true);
@@ -148,7 +191,8 @@ export default function CustomerOnboardingPanel({
     formData.set("customInvoiceDate", customStartDate);
     formData.set("deliveredTillDate", deliveredTillDate || "0");
     formData.set("mealPreference", mealPreference);
-    formData.set("skipSaturday", skipSaturday ? "true" : "false");
+    formData.set("skipWeekdays", JSON.stringify(skipWeekdays));
+    formData.set("skipSaturday", skipWeekdays.includes(6) ? "true" : "false");
     if (deliveryNotes.trim()) formData.set("deliveryNotes", deliveryNotes.trim());
 
     const response = await createCustomerWithSubscription(formData);
@@ -171,6 +215,21 @@ export default function CustomerOnboardingPanel({
       text: `Subscription created. Invoice ${response.data?.invoice_number ?? "--"}`,
     });
 
+    const exportDate = customStartDate || todayIST();
+    const createdCustomerId = Number(response.data?.customer_id ?? 0);
+    if (createdCustomerId > 0) {
+      try {
+        await downloadBillingExcel(createdCustomerId, exportDate, exportDate);
+      } catch (downloadError) {
+        setMessage({
+          type: "success",
+          text: `Subscription created. Invoice ${response.data?.invoice_number ?? "--"} | Excel download failed: ${
+            downloadError instanceof Error ? downloadError.message : "Unknown error"
+          }`,
+        });
+      }
+    }
+
     if (mode === "new") {
       setName("");
       setPhone("");
@@ -179,6 +238,7 @@ export default function CustomerOnboardingPanel({
 
     setDeliveredTillDate("0");
     setCustomStartDate(todayIST());
+    setSkipWeekdays([]);
     await onCreated();
   }
 
@@ -194,7 +254,16 @@ export default function CustomerOnboardingPanel({
       setPhone("");
       setAddress("");
       setPlanId(plans[0]?.id ?? "");
+      setSkipWeekdays([]);
     }
+  }
+
+  function toggleWeekday(day: number) {
+    setSkipWeekdays((current) =>
+      current.includes(day)
+        ? current.filter((value) => value !== day)
+        : [...current, day].sort((left, right) => left - right)
+    );
   }
 
   return (
@@ -354,14 +423,18 @@ export default function CustomerOnboardingPanel({
                   <strong>Plan</strong>
                   <span>{selection.name}</span>
                 </div>
-                <div className="summary-item">
-                  <strong>Tiffins</strong>
-                  <span>{selection.tiffin_count}</span>
-                </div>
-                <div className="summary-item">
-                  <strong>Invoice total</strong>
-                  <span>{formatINR(selection.total_price)}</span>
-                </div>
+              <div className="summary-item">
+                <strong>Tiffins</strong>
+                <span>{selection.tiffin_count}</span>
+              </div>
+              <div className="summary-item">
+                <strong>Per tiffin</strong>
+                <span>{formatINR((selection.total_price - selection.delivery_charge) / selection.tiffin_count)}</span>
+              </div>
+              <div className="summary-item">
+                <strong>Invoice total</strong>
+                <span>{formatINR(selection.total_price)}</span>
+              </div>
               </div>
             </div>
           ) : null}
@@ -428,17 +501,24 @@ export default function CustomerOnboardingPanel({
               <p className="field-copy">Used for kitchen forecast and KOT generation.</p>
             </div>
             <div className="field">
-              <label className="field-label" htmlFor="skip-saturday">
-                <input
-                  id="skip-saturday"
-                  type="checkbox"
-                  checked={skipSaturday}
-                  onChange={(event) => setSkipSaturday(event.target.checked)}
-                  style={{ marginRight: 8 }}
-                />
-                Skip Saturdays
-              </label>
-              <p className="field-copy">Saturdays won&apos;t deduct credits and subscription extends.</p>
+              <label className="field-label">Skip weekdays</label>
+              <div className="flex flex-wrap gap-2">
+                {WEEKDAY_OPTIONS.map((day) => (
+                  <label
+                    key={day.value}
+                    className="inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm"
+                    style={{ borderColor: "var(--border)" }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={skipWeekdays.includes(day.value)}
+                      onChange={() => toggleWeekday(day.value)}
+                    />
+                    <span>{day.label}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="field-copy">Selected weekdays won&apos;t deduct credits and the subscription extends automatically.</p>
             </div>
             <div className="field">
               <label className="field-label" htmlFor="delivery-notes">Delivery notes</label>

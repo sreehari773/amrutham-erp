@@ -21,7 +21,7 @@ export default function CustomerLoginPage() {
       setError(res.error);
       setLoading(false);
     } else {
-      router.push("/customer");
+      router.push("/");
     }
   }
 

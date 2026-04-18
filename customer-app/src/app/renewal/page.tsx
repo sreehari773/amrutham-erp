@@ -46,8 +46,8 @@ export default function RenewalPage() {
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
         </div>
         <h2 className="text-2xl font-black text-slate-800 mb-2">Payment Submitted!</h2>
-        <p className="text-slate-500 mb-8 max-w-sm">We've received your UTR number. Our team will verify the payment and activate your subscription shortly.</p>
-        <button onClick={() => window.location.href = "/customer"} className="btn-primary w-full max-w-xs shadow-lg shadow-orange-500/30">
+      <p className="text-slate-500 mb-8 max-w-sm">We&apos;ve received your UTR number. Our team will verify the payment and activate your subscription shortly.</p>
+        <button onClick={() => window.location.href = "/"} className="btn-primary w-full max-w-xs shadow-lg shadow-orange-500/30">
           Return to Dashboard
         </button>
       </div>

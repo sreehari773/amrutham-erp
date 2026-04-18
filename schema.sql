@@ -17,7 +17,9 @@ CREATE TABLE customers (
   user_id    UUID, -- References auth.users(id) in Supabase
   name       TEXT NOT NULL,
   phone      TEXT NOT NULL UNIQUE,
+  secondary_phone TEXT,
   address    TEXT,
+  saved_addresses JSONB DEFAULT '[]'::jsonb, -- Array of additional addresses
   app_password TEXT, -- For custom mobile app authentication
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -51,6 +53,7 @@ CREATE TABLE subscriptions (
   branch_id         TEXT NOT NULL DEFAULT 'Western Line',
   meal_preference   TEXT NOT NULL DEFAULT 'veg' CHECK (meal_preference IN ('veg', 'non_veg', 'mixed')),
   skip_saturday     BOOLEAN NOT NULL DEFAULT FALSE,
+  skip_weekdays     SMALLINT[] NOT NULL DEFAULT ARRAY[]::SMALLINT[],
   delivery_notes    TEXT,
   route_id          BIGINT,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -71,6 +74,9 @@ CREATE TABLE deliveries (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+GRANT ALL ON TABLE deliveries TO anon, authenticated, service_role;
+GRANT USAGE, SELECT ON SEQUENCE deliveries_id_seq TO anon, authenticated, service_role;
+
 ALTER TABLE deliveries
   ADD CONSTRAINT unique_delivery_per_day UNIQUE (subscription_id, delivery_date);
 
@@ -85,6 +91,7 @@ CREATE TABLE invoice_sequence (
 CREATE TABLE invoices (
   id              BIGSERIAL PRIMARY KEY,
   subscription_id BIGINT NOT NULL REFERENCES subscriptions(id),
+  customer_id     BIGINT NOT NULL REFERENCES customers(id),
   invoice_number  TEXT NOT NULL UNIQUE,
   amount          NUMERIC(12,2) NOT NULL,
   payment_mode    payment_mode_enum NOT NULL DEFAULT 'UPI',
@@ -177,6 +184,7 @@ CREATE OR REPLACE FUNCTION create_customer_with_subscription(
   p_custom_invoice_date DATE DEFAULT NULL,
   p_meal_preference TEXT DEFAULT 'veg',
   p_skip_saturday BOOLEAN DEFAULT FALSE,
+  p_skip_weekdays SMALLINT[] DEFAULT ARRAY[]::SMALLINT[],
   p_delivery_notes TEXT DEFAULT NULL
 )
 RETURNS JSON
@@ -213,18 +221,18 @@ BEGIN
   INSERT INTO subscriptions (
     customer_id, plan_id, total_tiffins, remaining_tiffins,
     price_per_tiffin, total_amount, start_date,
-    meal_preference, skip_saturday, delivery_notes
+    meal_preference, skip_saturday, skip_weekdays, delivery_notes
   ) VALUES (
     v_customer_id, p_plan_id, v_plan.tiffin_count, v_plan.tiffin_count,
     v_price_per_tiffin, v_plan.total_price, v_start,
-    p_meal_preference, p_skip_saturday, p_delivery_notes
+    p_meal_preference, p_skip_saturday, COALESCE(p_skip_weekdays, ARRAY[]::SMALLINT[]), p_delivery_notes
   ) RETURNING id INTO v_sub_id;
 
   -- Generate invoice
   v_inv_num := generate_invoice_number(v_inv_date);
 
-  INSERT INTO invoices (subscription_id, invoice_number, amount, payment_mode, invoice_date)
-  VALUES (v_sub_id, v_inv_num, v_plan.total_price, p_payment_mode, v_inv_date);
+  INSERT INTO invoices (subscription_id, customer_id, invoice_number, amount, payment_mode, invoice_date)
+  VALUES (v_sub_id, v_customer_id, v_inv_num, v_plan.total_price, p_payment_mode, v_inv_date);
 
   -- Log
   INSERT INTO system_logs (action_type, description, actor)
@@ -273,16 +281,17 @@ BEGIN
 
   INSERT INTO subscriptions (
     customer_id, plan_id, total_tiffins, remaining_tiffins,
-    price_per_tiffin, total_amount, start_date
+    price_per_tiffin, total_amount, start_date, meal_preference, skip_saturday, skip_weekdays, delivery_notes
   ) VALUES (
     v_old.customer_id, p_plan_id, v_plan.tiffin_count, v_plan.tiffin_count,
-    v_price_per_tiffin, v_plan.total_price, p_start_date
+    v_price_per_tiffin, v_plan.total_price, p_start_date,
+    v_old.meal_preference, COALESCE(v_old.skip_saturday, FALSE), COALESCE(v_old.skip_weekdays, ARRAY[]::SMALLINT[]), v_old.delivery_notes
   ) RETURNING id INTO v_new_sub_id;
 
   v_inv_num := generate_invoice_number(p_start_date);
 
-  INSERT INTO invoices (subscription_id, invoice_number, amount, payment_mode, invoice_date)
-  VALUES (v_new_sub_id, v_inv_num, v_plan.total_price, p_payment_mode, p_start_date);
+  INSERT INTO invoices (subscription_id, customer_id, invoice_number, amount, payment_mode, invoice_date)
+  VALUES (v_new_sub_id, v_old.customer_id, v_inv_num, v_plan.total_price, p_payment_mode, p_start_date);
 
   INSERT INTO system_logs (action_type, description, actor)
   VALUES ('SUBSCRIPTION_RENEWED',
@@ -322,7 +331,10 @@ BEGIN
       AND p_target_date >= s.pause_start
       AND p_target_date <= COALESCE(s.pause_end, p_target_date)
     )
-    AND NOT (s.skip_saturday AND EXTRACT(DOW FROM p_target_date) = 6)
+    AND NOT (
+      (s.skip_saturday AND EXTRACT(DOW FROM p_target_date) = 6)
+      OR EXTRACT(DOW FROM p_target_date)::INT = ANY(COALESCE(s.skip_weekdays, ARRAY[]::SMALLINT[]))
+    )
   ORDER BY c.name;
 END;
 $$;
@@ -346,7 +358,10 @@ BEGIN
         AND p_target_date >= s.pause_start
         AND p_target_date <= COALESCE(s.pause_end, p_target_date)
       )
-      AND NOT (s.skip_saturday AND EXTRACT(DOW FROM p_target_date) = 6)
+      AND NOT (
+        (s.skip_saturday AND EXTRACT(DOW FROM p_target_date) = 6)
+        OR EXTRACT(DOW FROM p_target_date)::INT = ANY(COALESCE(s.skip_weekdays, ARRAY[]::SMALLINT[]))
+      )
   ),
   inserted AS (
     INSERT INTO deliveries (subscription_id, delivery_date, reason)
@@ -404,6 +419,10 @@ BEGIN
        AND p_target_date >= v_sub.pause_start
        AND p_target_date <= COALESCE(v_sub.pause_end, p_target_date) THEN
       RAISE EXCEPTION 'Subscription is paused on %', p_target_date;
+    END IF;
+    IF (COALESCE(v_sub.skip_saturday, FALSE) AND EXTRACT(DOW FROM p_target_date) = 6)
+       OR EXTRACT(DOW FROM p_target_date)::INT = ANY(COALESCE(v_sub.skip_weekdays, ARRAY[]::SMALLINT[])) THEN
+      RAISE EXCEPTION 'Subscription is configured to skip deliveries on %', p_target_date;
     END IF;
 
     -- Insert with conflict guard

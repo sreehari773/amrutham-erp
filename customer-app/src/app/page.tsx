@@ -8,7 +8,7 @@ export default async function CustomerDashboardPage() {
   const { data, error } = await getCustomerDashboardData();
 
   if (error || !data) {
-    redirect("/customer/login");
+    redirect("/login");
   }
 
   const { subscription, todayMenu, dayOfWeek } = data;
@@ -61,7 +61,7 @@ export default async function CustomerDashboardPage() {
             
             {tiffinsLeft === 0 && (
               <div className="mt-6 flex gap-3">
-                <Link href="/customer/renewal" className="bg-white text-[var(--accent)] font-bold py-2.5 px-4 rounded-xl flex-1 text-center shadow-lg active:scale-95 transition-all">
+                <Link href="/renewal" className="bg-white text-[var(--accent)] font-bold py-2.5 px-4 rounded-xl flex-1 text-center shadow-lg active:scale-95 transition-all">
                   Renew Now
                 </Link>
               </div>
@@ -71,7 +71,7 @@ export default async function CustomerDashboardPage() {
           <div className="relative z-10">
             <h2 className="text-xl font-black mb-2">No Active Plan</h2>
             <p className="text-orange-100 text-sm mb-4">You do not have a running subscription.</p>
-            <Link href="/customer/renewal" className="bg-white text-[var(--accent)] font-bold py-2.5 px-4 rounded-xl inline-block shadow-lg active:scale-95 transition-all">
+            <Link href="/renewal" className="bg-white text-[var(--accent)] font-bold py-2.5 px-4 rounded-xl inline-block shadow-lg active:scale-95 transition-all">
               Start Subscription
             </Link>
           </div>
@@ -79,7 +79,7 @@ export default async function CustomerDashboardPage() {
       </div>
 
       {/* Today's Menu Highlight */}
-      <h3 className="font-bold text-lg mb-3">Today's Menu ({dayOfWeek})</h3>
+      <h3 className="font-bold text-lg mb-3">Today&apos;s Menu ({dayOfWeek})</h3>
       {todayMenu ? (
         <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex flex-col gap-4">
           {subscription?.meal_preference !== 'non_veg' && (
@@ -89,7 +89,7 @@ export default async function CustomerDashboardPage() {
               </div>
               <div>
                 <p className="text-xs font-bold text-slate-500 uppercase">Vegetarian</p>
-                <p className="text-slate-800 text-sm font-medium leading-relaxed">{todayMenu.veg_description || "Chef's Special Veg"}</p>
+                <p className="text-slate-800 text-sm font-medium leading-relaxed">{todayMenu.veg_description || "Chef&apos;s Special Veg"}</p>
               </div>
             </div>
           )}
@@ -101,7 +101,7 @@ export default async function CustomerDashboardPage() {
               </div>
               <div>
                 <p className="text-xs font-bold text-slate-500 uppercase">Non-Vegetarian</p>
-                <p className="text-slate-800 text-sm font-medium leading-relaxed">{todayMenu.non_veg_description || "Chef's Special Non-Veg"}</p>
+                <p className="text-slate-800 text-sm font-medium leading-relaxed">{todayMenu.non_veg_description || "Chef&apos;s Special Non-Veg"}</p>
               </div>
             </div>
           )}
@@ -114,7 +114,7 @@ export default async function CustomerDashboardPage() {
 
       {/* Quick Actions */}
       <div className="grid grid-cols-2 gap-4 mt-8">
-         <Link href="/customer/pause" className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col items-center justify-center gap-2 active:scale-95 transition-transform">
+         <Link href="/pause" className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col items-center justify-center gap-2 active:scale-95 transition-transform">
            <div className="w-10 h-10 rounded-full bg-rose-50 flex items-center justify-center text-rose-500">
              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="4" height="16" x="6" y="4"/><rect width="4" height="16" x="14" y="4"/></svg>
            </div>

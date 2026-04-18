@@ -3,19 +3,29 @@
 import { useState, useEffect } from "react";
 import { getUpcomingDeliveries, pauseDeliveryForDate } from "@/app/actions/customerSchedule";
 
+type PauseScheduleData = {
+  subscription?: {
+    meal_preference?: string | null;
+  } | null;
+  pauses?: Array<{
+    pause_start: string;
+    pause_end: string | null;
+    reason?: string | null;
+  }>;
+};
+
 export default function PauseSchedulePage() {
   const [loading, setLoading] = useState(true);
-  const [data, setData] = useState<any>(null);
+  const [data, setData] = useState<PauseScheduleData | null>(null);
   const [error, setError] = useState<string | null>(null);
   
   // Date picker state
   const [selectedDate, setSelectedDate] = useState("");
-  const [isDinner, setIsDinner] = useState(false); // Can be inferred from meal_preference in real app
 
   useEffect(() => {
     getUpcomingDeliveries().then(res => {
       if (res.error) setError(res.error);
-      else setData(res.data);
+      else setData(res.data && !Array.isArray(res.data) ? res.data : null);
       setLoading(false);
     });
   }, []);
@@ -28,13 +38,13 @@ export default function PauseSchedulePage() {
     // Check if meal preference is dinner
     const prefIsDinner = data?.subscription?.meal_preference === 'dinner';
     
-    const res = await pauseDeliveryForDate(selectedDate, isDinner || prefIsDinner);
+    const res = await pauseDeliveryForDate(selectedDate, prefIsDinner);
     if (res.error) {
       setError(res.error);
     } else {
       // Reload pauses
       const fresh = await getUpcomingDeliveries();
-      setData(fresh.data);
+      setData(fresh.data && !Array.isArray(fresh.data) ? fresh.data : null);
       setSelectedDate("");
       alert("Delivery successfully skipped! Your remaining tiffins remains untouched.");
     }
@@ -75,9 +85,9 @@ export default function PauseSchedulePage() {
 
       {/* List Recent Paused Days */}
       <h3 className="font-bold text-slate-800 mb-4">Upcoming Skipped Days</h3>
-      {data?.pauses?.length > 0 ? (
+      {(data?.pauses?.length ?? 0) > 0 ? (
         <div className="space-y-3">
-          {data.pauses.map((p: any, i: number) => {
+          {(data?.pauses ?? []).map((p, i: number) => {
             const dateStr = new Date(p.pause_start).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
             return (
               <div key={i} className="flex justify-between items-center bg-white p-4 rounded-2xl border border-slate-100 opacity-70">
