@@ -2,6 +2,7 @@
 
 import { cookies } from "next/headers";
 import { getSupabaseAdmin } from "@/lib/supabase";
+import { sign, verify } from "@/lib/session";
 
 export async function customerLogin(phone: string, password: string) {
   try {
@@ -19,10 +20,12 @@ export async function customerLogin(phone: string, password: string) {
       return { error: "Invalid phone number or password." };
     }
     
-    // Set a secure HTTP-only cookie with the customer ID
+    // Set a secure HTTP-only cookie with the signed customer ID
     // In a production app with auth.users, we would use Supabase SSR tokens.
     // For this fast managed iteration, a signed generic cookie suffices.
-    cookies().set("amrutham_customer_session", String(customer.id), {
+    const signedSession = sign(String(customer.id));
+
+    cookies().set("amrutham_customer_session", signedSession, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
@@ -44,5 +47,8 @@ export async function customerLogout() {
 // Utility for Server Components to get the current customer ID
 export async function getCustomerSession() {
   const sessionCookie = cookies().get("amrutham_customer_session");
-  return sessionCookie ? parseInt(sessionCookie.value, 10) : null;
+  if (!sessionCookie) return null;
+
+  const customerId = verify(sessionCookie.value);
+  return customerId ? parseInt(customerId, 10) : null;
 }

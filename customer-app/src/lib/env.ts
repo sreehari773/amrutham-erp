@@ -29,6 +29,7 @@ function firstDefinedEnv(names: string[]): string | undefined {
 export const env = {
   get supabaseUrl() { return requireEnv("NEXT_PUBLIC_SUPABASE_URL"); },
   get supabaseServiceRoleKey() { return requireEnv("SUPABASE_SERVICE_ROLE_KEY"); },
+  get authSecret() { return requireEnv("AUTH_SECRET"); },
 };
 
 export function isBasicAuthConfigured(): boolean {
