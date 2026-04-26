@@ -494,17 +494,22 @@ export async function createCustomerWithSubscription(formData: FormData) {
 
     const subscriptionId = Number(data?.subscription_id ?? 0);
 
-    for (const targetDate of backfillDates) {
-      const { error: deliveryError } = await sb.rpc("manual_adjust_delivery", {
-        p_sub_id: subscriptionId,
-        p_target_date: targetDate,
-        p_action: "DEDUCT",
-        p_reason: "Backfill via customer onboarding",
-      });
+    const deliveryResults = await Promise.all(
+      backfillDates.map((targetDate) =>
+        sb.rpc("manual_adjust_delivery", {
+          p_sub_id: subscriptionId,
+          p_target_date: targetDate,
+          p_action: "DEDUCT",
+          p_reason: "Backfill via customer onboarding",
+        })
+      )
+    );
 
+    for (let i = 0; i < deliveryResults.length; i++) {
+      const { error: deliveryError } = deliveryResults[i];
       if (deliveryError) {
         return {
-          error: `Subscription created, but delivery backfill failed on ${targetDate}: ${deliveryError.message}`,
+          error: `Subscription created, but delivery backfill failed on ${backfillDates[i]}: ${deliveryError.message}`,
         };
       }
     }
@@ -1392,14 +1397,19 @@ export async function seedDemoData() {
 
       const subscriptionId = Number(data?.subscription_id ?? 0);
 
-      for (const targetDate of enumerateDeliveryDates(demo.startDate, demo.delivered)) {
-        const { error: deliveryError } = await sb.rpc("manual_adjust_delivery", {
-          p_sub_id: subscriptionId,
-          p_target_date: targetDate,
-          p_action: "DEDUCT",
-          p_reason: "Demo seed",
-        });
+      const deliveryDates = enumerateDeliveryDates(demo.startDate, demo.delivered);
+      const deliveryResults = await Promise.all(
+        deliveryDates.map((targetDate) =>
+          sb.rpc("manual_adjust_delivery", {
+            p_sub_id: subscriptionId,
+            p_target_date: targetDate,
+            p_action: "DEDUCT",
+            p_reason: "Demo seed",
+          })
+        )
+      );
 
+      for (const { error: deliveryError } of deliveryResults) {
         if (deliveryError) {
           notes.push(`Sub #${subscriptionId}: ${deliveryError.message}`);
           break;
