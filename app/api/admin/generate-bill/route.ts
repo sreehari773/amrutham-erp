@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
+import { env } from "@/lib/env";
+import { logShadowMismatch } from "@/lib/rollout";
 import { getSupabaseAdmin } from "@/lib/supabase";
-import { inferSubscriptionSelection, DEFAULT_SUBSCRIPTION_CATALOG } from "@/lib/subscription-catalog";
+import { queueMessage } from "@/app/actions/messaging";
 
 export const dynamic = "force-dynamic";
-import { getSubscriptionCatalog } from "@/app/actions/sprint1";
 
 function buildFallbackInvoiceNumber(invoiceDate: string) {
   const date = new Date(`${invoiceDate}T00:00:00`);
@@ -16,34 +17,90 @@ function buildFallbackInvoiceNumber(invoiceDate: string) {
 
 export async function POST(req: Request) {
   try {
-    const { subscriptionId, fromDate, toDate } = await req.json();
+    const { subscriptionId, fromDate, toDate, adjustment = false } = await req.json();
 
     if (!subscriptionId || !fromDate || !toDate) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    const sb = getSupabaseAdmin();
-
-    // 1. Get deliveries in range
-    const { data: deliveries, error: deliveryError } = await sb
-      .from("deliveries")
-      .select("id")
-      .eq("subscription_id", subscriptionId)
-      .gte("delivery_date", fromDate)
-      .lte("delivery_date", toDate)
-      .eq("status", "Delivered");
-
-    if (deliveryError) {
-      if (deliveryError.message.includes("Could not find the table 'public.deliveries'")) {
-        throw new Error("The deliveries table is missing from the live database schema. Apply the latest delivery schema patch in Supabase and reload the schema cache.");
-      }
-
-      throw new Error(deliveryError.message);
+    if (fromDate > toDate) {
+      return NextResponse.json({ error: "From date cannot be later than to date" }, { status: 400 });
     }
 
-    const deliveryCount = deliveries?.length || 0;
+    const sb = getSupabaseAdmin();
+    const billingShadowEnabled =
+      env.rollout.deliveryStatusShadowEnabled ||
+      env.rollout.autoExtensionShadowEnabled ||
+      env.rollout.retroSkipAdjustmentShadowEnabled ||
+      env.rollout.prorationShadowEnabled;
+    const billingWriteEnabled =
+      env.rollout.deliveryStatusWriteEnabled ||
+      env.rollout.autoExtensionWriteEnabled ||
+      env.rollout.retroSkipAdjustmentWriteEnabled ||
+      env.rollout.prorationWriteEnabled;
 
-    // 2. Get subscription info for pricing and invoice ownership
+    if (billingWriteEnabled) {
+      const { data: overlappingInvoice } = await sb
+        .from("invoices")
+        .select("id, invoice_number")
+        .eq("subscription_id", subscriptionId)
+        .neq("invoice_type", "adjustment")
+        .not("billing_period_start", "is", null)
+        .not("billing_period_end", "is", null)
+        .lte("billing_period_start", toDate)
+        .gte("billing_period_end", fromDate)
+        .limit(1)
+        .maybeSingle();
+
+      if (overlappingInvoice && !adjustment) {
+        return NextResponse.json(
+          { error: `Billing period overlaps with existing invoice ${overlappingInvoice.invoice_number}` },
+          { status: 409 }
+        );
+      }
+    }
+
+    const [legacyDeliveriesResult, enhancedDeliveriesResult] = await Promise.all([
+      sb
+        .from("deliveries")
+        .select("id, delivery_date")
+        .eq("subscription_id", subscriptionId)
+        .gte("delivery_date", fromDate)
+        .lte("delivery_date", toDate),
+      sb
+        .from("deliveries")
+        .select("id, delivery_date")
+        .eq("subscription_id", subscriptionId)
+        .gte("delivery_date", fromDate)
+        .lte("delivery_date", toDate)
+        .in("status", ["delivered", "confirmed"])
+        .eq("billable", true),
+    ]);
+
+    if (legacyDeliveriesResult.error || enhancedDeliveriesResult.error) {
+      throw new Error(
+        legacyDeliveriesResult.error?.message ??
+          enhancedDeliveriesResult.error?.message ??
+          "Failed to load deliveries."
+      );
+    }
+
+    const legacyDeliveryCount = legacyDeliveriesResult.data?.length || 0;
+    const enhancedDeliveryCount = enhancedDeliveriesResult.data?.length || 0;
+
+    if (billingShadowEnabled && legacyDeliveryCount !== enhancedDeliveryCount) {
+      await logShadowMismatch("SHADOW_BILLING_MISMATCH", {
+        subscriptionId,
+        fromDate,
+        toDate,
+        legacyDeliveryCount,
+        enhancedDeliveryCount,
+        adjustment,
+      });
+    }
+
+    const deliveryCount = billingWriteEnabled ? enhancedDeliveryCount : legacyDeliveryCount;
+
     const { data: subData, error: subError } = await sb
       .from("subscriptions")
       .select("price_per_tiffin, customer_id")
@@ -70,19 +127,30 @@ export async function POST(req: Request) {
       invoiceNumber = generatedInvoiceNumber;
     }
 
-    // 3. Create invoice record
+    const invoiceType = adjustment && billingWriteEnabled ? "adjustment" : "standard";
+    const adjustmentReason = adjustment && billingWriteEnabled ? "Retroactive billing adjustment" : null;
+
     const { data: invoice, error: invoiceError } = await sb
       .from("invoices")
       .insert({
         subscription_id: subscriptionId,
         customer_id: subData.customer_id,
         invoice_number: invoiceNumber,
-        amount: amount,
+        amount,
+        recognized_revenue: amount,
         payment_status: "Pending",
         amount_paid: 0,
         billing_period_start: fromDate,
         billing_period_end: toDate,
         invoice_date: toDate,
+        invoice_type: invoiceType,
+        adjustment_reason: adjustmentReason,
+        adjustment_meta: {
+          deliveredRows: deliveryCount,
+          source: billingWriteEnabled ? "admin-generate-bill-v2" : "admin-generate-bill-legacy",
+          legacyDeliveryCount,
+          enhancedDeliveryCount,
+        },
       })
       .select("id")
       .single();
@@ -91,10 +159,41 @@ export async function POST(req: Request) {
       throw new Error(invoiceError.message);
     }
 
-    // 4. Log it
+    if (env.rollout.whatsappAutomationWriteEnabled) {
+      await queueMessage({
+        subscriptionId,
+        customerId: subData.customer_id,
+        eventType: "bill_generated",
+        vars: {
+          invoiceNumber,
+          amount: amount.toFixed(0),
+          period: `${fromDate} to ${toDate}`,
+        },
+        referenceKey: `bill:${subscriptionId}:${fromDate}:${toDate}:${invoiceType}`,
+        metadata: {
+          invoiceId: invoice.id,
+          invoiceNumber,
+          fromDate,
+          toDate,
+          adjustment,
+        },
+      });
+    } else if (env.rollout.whatsappAutomationShadowEnabled) {
+      await logShadowMismatch("SHADOW_MESSAGE_ENQUEUE", {
+        feature: "bill-generated",
+        subscriptionId,
+        customerId: subData.customer_id,
+        invoiceId: invoice.id,
+        invoiceNumber,
+        fromDate,
+        toDate,
+        adjustment,
+      });
+    }
+
     await sb.from("system_logs").insert({
       action_type: "CUSTOM_BILL_GENERATED",
-      description: `Generated bill for sub ${subscriptionId} from ${fromDate} to ${toDate} (${deliveryCount} tiffins = ${amount})`,
+      description: `Generated bill for sub ${subscriptionId} from ${fromDate} to ${toDate} (${deliveryCount} tiffins = ${amount}) via ${billingWriteEnabled ? "v2" : "legacy"}`,
       actor: "admin",
     });
 
@@ -103,10 +202,9 @@ export async function POST(req: Request) {
       data: {
         invoiceId: invoice.id,
         deliveries: deliveryCount,
-        amount: amount,
+        amount,
       }
     });
-
   } catch (error) {
     console.error("Custom Billing Error:", error);
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to generate bill" }, { status: 500 });

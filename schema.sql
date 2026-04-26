@@ -825,3 +825,514 @@ LEFT JOIN pause_history ph ON ph.subscription_id = s.id
 GROUP BY c.id, c.name, c.phone;
 
 CREATE UNIQUE INDEX idx_analytics_customer ON subscription_analytics(customer_id);
+
+-- ============================================================================
+-- Billing System Hardening Patch
+-- ============================================================================
+
+ALTER TABLE subscriptions
+  ADD COLUMN IF NOT EXISTS holiday_opt_out BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS extension_notes JSONB NOT NULL DEFAULT '[]'::JSONB;
+
+ALTER TABLE subscription_plans
+  ADD COLUMN IF NOT EXISTS ingredient_cost_per_tiffin NUMERIC(10,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS delivery_cost_per_tiffin NUMERIC(10,2) NOT NULL DEFAULT 0;
+
+ALTER TABLE deliveries
+  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS status_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ADD COLUMN IF NOT EXISTS status_source TEXT NOT NULL DEFAULT 'system',
+  ADD COLUMN IF NOT EXISTS fault_type TEXT,
+  ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS billable BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS extension_applied BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::JSONB;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'deliveries_status_check'
+  ) THEN
+    ALTER TABLE deliveries
+      ADD CONSTRAINT deliveries_status_check
+      CHECK (status IN ('pending', 'out_for_delivery', 'delivered', 'confirmed', 'skipped', 'kitchen_missed', 'cancelled'));
+  END IF;
+END;
+$$;
+
+ALTER TABLE invoices
+  ADD COLUMN IF NOT EXISTS amount_paid NUMERIC(12,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'Pending',
+  ADD COLUMN IF NOT EXISTS billing_period_start DATE,
+  ADD COLUMN IF NOT EXISTS billing_period_end DATE,
+  ADD COLUMN IF NOT EXISTS invoice_type TEXT NOT NULL DEFAULT 'standard',
+  ADD COLUMN IF NOT EXISTS related_invoice_id BIGINT REFERENCES invoices(id),
+  ADD COLUMN IF NOT EXISTS adjustment_reason TEXT,
+  ADD COLUMN IF NOT EXISTS adjustment_meta JSONB NOT NULL DEFAULT '{}'::JSONB,
+  ADD COLUMN IF NOT EXISTS recognized_revenue NUMERIC(12,2),
+  ADD COLUMN IF NOT EXISTS ingredient_cost_total NUMERIC(12,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS delivery_cost_total NUMERIC(12,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS profit_total NUMERIC(12,2) GENERATED ALWAYS AS (
+    COALESCE(recognized_revenue, amount) - ingredient_cost_total - delivery_cost_total
+  ) STORED;
+
+ALTER TABLE messaging_events
+  ADD COLUMN IF NOT EXISTS reference_key TEXT,
+  ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::JSONB;
+
+CREATE INDEX IF NOT EXISTS idx_messaging_reference_key ON messaging_events(reference_key);
+CREATE INDEX IF NOT EXISTS idx_invoices_subscription_period ON invoices(subscription_id, billing_period_start, billing_period_end);
+CREATE INDEX IF NOT EXISTS idx_deliveries_date_status ON deliveries(delivery_date, status, billable);
+
+CREATE OR REPLACE VIEW subscriptions_with_latest_invoice AS
+SELECT
+  s.id AS subscription_id,
+  s.customer_id,
+  c.name,
+  c.phone,
+  c.address,
+  s.plan_id,
+  sp.name AS plan_name,
+  s.total_tiffins,
+  s.remaining_tiffins,
+  s.price_per_tiffin,
+  s.total_amount,
+  s.status,
+  s.start_date,
+  s.pause_start,
+  s.pause_end,
+  s.skip_saturday,
+  s.skip_weekdays,
+  s.delivery_notes,
+  s.meal_preference,
+  s.holiday_opt_out,
+  s.created_at,
+  li.invoice_number AS latest_invoice_number,
+  li.amount AS latest_invoice_amount,
+  li.invoice_date AS latest_invoice_date,
+  li.payment_status AS latest_invoice_status
+FROM subscriptions s
+JOIN customers c ON c.id = s.customer_id
+JOIN subscription_plans sp ON sp.id = s.plan_id
+LEFT JOIN LATERAL (
+  SELECT inv.invoice_number, inv.amount, inv.invoice_date, inv.payment_status
+  FROM invoices inv
+  WHERE inv.subscription_id = s.id
+    AND inv.invoice_type <> 'adjustment'
+  ORDER BY inv.invoice_date DESC, inv.created_at DESC
+  LIMIT 1
+) li ON TRUE;
+
+CREATE OR REPLACE FUNCTION sync_subscription_pause_window(p_sub_id BIGINT)
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_pause_start DATE;
+  v_pause_end DATE;
+  v_today_ist DATE := (NOW() AT TIME ZONE 'Asia/Kolkata')::DATE;
+BEGIN
+  SELECT MIN(pause_start), MAX(COALESCE(pause_end, pause_start))
+  INTO v_pause_start, v_pause_end
+  FROM pause_history
+  WHERE subscription_id = p_sub_id
+    AND COALESCE(pause_end, pause_start) >= v_today_ist;
+
+  UPDATE subscriptions
+  SET pause_start = v_pause_start,
+      pause_end = v_pause_end
+  WHERE id = p_sub_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION register_pause_event_v2(
+  p_sub_id BIGINT,
+  p_pause_start DATE,
+  p_pause_end DATE DEFAULT NULL,
+  p_pause_mode TEXT DEFAULT 'override',
+  p_reason TEXT DEFAULT NULL,
+  p_actor TEXT DEFAULT 'system'
+)
+RETURNS JSON
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_sub RECORD;
+  v_effective_end DATE;
+  v_overlap_count INT;
+  v_today_ist DATE := (NOW() AT TIME ZONE 'Asia/Kolkata')::DATE;
+BEGIN
+  SELECT *
+  INTO v_sub
+  FROM subscriptions
+  WHERE id = p_sub_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Subscription % not found', p_sub_id;
+  END IF;
+
+  IF p_pause_start < v_sub.start_date THEN
+    RAISE EXCEPTION 'Pause date % is before subscription start date %', p_pause_start, v_sub.start_date;
+  END IF;
+
+  IF p_pause_start < v_today_ist THEN
+    RAISE EXCEPTION 'Pause date % cannot be in the past', p_pause_start;
+  END IF;
+
+  v_effective_end := COALESCE(p_pause_end, p_pause_start);
+
+  IF v_effective_end < p_pause_start THEN
+    RAISE EXCEPTION 'Pause end date % cannot be earlier than pause start %', v_effective_end, p_pause_start;
+  END IF;
+
+  SELECT COUNT(*)
+  INTO v_overlap_count
+  FROM pause_history
+  WHERE subscription_id = p_sub_id
+    AND p_pause_start <= COALESCE(pause_end, pause_start)
+    AND v_effective_end >= pause_start;
+
+  IF v_overlap_count > 0 THEN
+    RAISE EXCEPTION 'Pause window overlaps with an existing pause for subscription %', p_sub_id;
+  END IF;
+
+  INSERT INTO pause_history (subscription_id, pause_start, pause_end, pause_mode, reason)
+  VALUES (p_sub_id, p_pause_start, v_effective_end, p_pause_mode, p_reason);
+
+  PERFORM sync_subscription_pause_window(p_sub_id);
+
+  INSERT INTO system_logs (action_type, description, actor)
+  VALUES (
+    'SUBSCRIPTION_PAUSED',
+    'Sub #' || p_sub_id || ' paused from ' || p_pause_start || ' to ' || v_effective_end || '. Reason: ' || COALESCE(p_reason, 'N/A'),
+    p_actor
+  );
+
+  RETURN json_build_object(
+    'subscription_id', p_sub_id,
+    'pause_start', p_pause_start,
+    'pause_end', v_effective_end
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION apply_global_holiday_skip_v2(
+  p_target_date DATE,
+  p_reason TEXT DEFAULT 'Holiday auto-skip'
+)
+RETURNS INT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_count INT := 0;
+  v_sub RECORD;
+BEGIN
+  FOR v_sub IN
+    SELECT id
+    FROM subscriptions
+    WHERE status IN ('Active', 'Grace')
+      AND holiday_opt_out = FALSE
+      AND p_target_date >= start_date
+      AND NOT EXISTS (
+        SELECT 1
+        FROM pause_history ph
+        WHERE ph.subscription_id = subscriptions.id
+          AND p_target_date BETWEEN ph.pause_start AND COALESCE(ph.pause_end, ph.pause_start)
+      )
+  LOOP
+    PERFORM register_pause_event_v2(
+      v_sub.id,
+      p_target_date,
+      p_target_date,
+      'override',
+      COALESCE(p_reason, 'Holiday auto-skip'),
+      'holiday-bot'
+    );
+    v_count := v_count + 1;
+  END LOOP;
+
+  RETURN v_count;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION transition_delivery_status_v2(
+  p_sub_id BIGINT,
+  p_target_date DATE,
+  p_new_status TEXT,
+  p_status_source TEXT DEFAULT 'admin',
+  p_reason TEXT DEFAULT NULL,
+  p_fault_type TEXT DEFAULT NULL,
+  p_billable BOOLEAN DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_sub RECORD;
+  v_delivery RECORD;
+  v_old_status TEXT;
+  v_effective_billable BOOLEAN;
+  v_is_non_chargeable BOOLEAN;
+BEGIN
+  SELECT *
+  INTO v_sub
+  FROM subscriptions
+  WHERE id = p_sub_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Subscription % not found', p_sub_id;
+  END IF;
+
+  IF p_target_date < v_sub.start_date THEN
+    RAISE EXCEPTION 'Target date % is before subscription start date %', p_target_date, v_sub.start_date;
+  END IF;
+
+  IF p_new_status NOT IN ('pending', 'out_for_delivery', 'delivered', 'confirmed', 'skipped', 'kitchen_missed', 'cancelled') THEN
+    RAISE EXCEPTION 'Unsupported delivery status: %', p_new_status;
+  END IF;
+
+  SELECT *
+  INTO v_delivery
+  FROM deliveries
+  WHERE subscription_id = p_sub_id
+    AND delivery_date = p_target_date
+  FOR UPDATE;
+
+  v_effective_billable := COALESCE(p_billable, p_new_status IN ('delivered', 'confirmed'));
+  v_is_non_chargeable := p_new_status IN ('skipped', 'kitchen_missed', 'cancelled') OR v_effective_billable = FALSE;
+  v_old_status := v_delivery.status;
+
+  IF v_delivery.id IS NULL THEN
+    INSERT INTO deliveries (
+      subscription_id,
+      delivery_date,
+      reason,
+      status,
+      status_updated_at,
+      status_source,
+      fault_type,
+      confirmed_at,
+      billable,
+      extension_applied,
+      metadata
+    ) VALUES (
+      p_sub_id,
+      p_target_date,
+      COALESCE(p_reason, 'Delivery transition'),
+      p_new_status,
+      NOW(),
+      p_status_source,
+      p_fault_type,
+      CASE WHEN p_new_status = 'confirmed' THEN NOW() ELSE NULL END,
+      v_effective_billable,
+      v_is_non_chargeable,
+      jsonb_build_object('reason', COALESCE(p_reason, ''), 'status_source', p_status_source)
+    )
+    RETURNING * INTO v_delivery;
+  ELSE
+    UPDATE deliveries
+    SET reason = COALESCE(p_reason, deliveries.reason),
+        status = p_new_status,
+        status_updated_at = NOW(),
+        status_source = p_status_source,
+        fault_type = COALESCE(p_fault_type, deliveries.fault_type),
+        confirmed_at = CASE
+          WHEN p_new_status = 'confirmed' THEN NOW()
+          ELSE deliveries.confirmed_at
+        END,
+        billable = v_effective_billable,
+        extension_applied = v_is_non_chargeable,
+        metadata = deliveries.metadata || jsonb_build_object('reason', COALESCE(p_reason, ''), 'status_source', p_status_source)
+    WHERE id = v_delivery.id
+    RETURNING * INTO v_delivery;
+  END IF;
+
+  IF p_new_status IN ('delivered', 'confirmed') AND COALESCE(v_old_status, '') NOT IN ('delivered', 'confirmed') THEN
+    IF v_sub.remaining_tiffins <= 0 THEN
+      RAISE EXCEPTION 'No remaining tiffins on subscription %', p_sub_id;
+    END IF;
+
+    UPDATE subscriptions
+    SET remaining_tiffins = remaining_tiffins - 1,
+        status = CASE
+          WHEN remaining_tiffins - 1 = 0 THEN 'Expired'::subscription_status
+          ELSE status
+        END,
+        completed_at = CASE
+          WHEN remaining_tiffins - 1 = 0 THEN NOW()
+          ELSE completed_at
+        END
+    WHERE id = p_sub_id;
+  ELSIF p_new_status IN ('skipped', 'kitchen_missed', 'cancelled')
+        AND COALESCE(v_old_status, '') IN ('delivered', 'confirmed') THEN
+    UPDATE subscriptions
+    SET remaining_tiffins = remaining_tiffins + 1,
+        status = 'Active'::subscription_status,
+        completed_at = NULL,
+        extension_notes = extension_notes || jsonb_build_array(
+          jsonb_build_object('date', p_target_date, 'status', p_new_status, 'reason', COALESCE(p_reason, ''))
+        )
+    WHERE id = p_sub_id;
+  END IF;
+
+  INSERT INTO system_logs (action_type, description, actor)
+  VALUES (
+    'DELIVERY_STATUS_UPDATED',
+    'Sub #' || p_sub_id || ' on ' || p_target_date || ' -> ' || p_new_status || '. Reason: ' || COALESCE(p_reason, 'N/A'),
+    p_status_source
+  );
+
+  RETURN json_build_object(
+    'subscription_id', p_sub_id,
+    'delivery_date', p_target_date,
+    'status', p_new_status,
+    'billable', v_effective_billable,
+    'fault_type', p_fault_type
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION mark_today_delivered_v2(
+  p_target_date DATE DEFAULT CURRENT_DATE,
+  p_stage TEXT DEFAULT 'delivered'
+)
+RETURNS INT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_count INT := 0;
+  v_sub RECORD;
+BEGIN
+  FOR v_sub IN
+    SELECT s.id
+    FROM subscriptions s
+    WHERE s.status IN ('Active', 'Grace')
+      AND s.remaining_tiffins > 0
+      AND p_target_date >= s.start_date
+      AND NOT (
+        s.pause_start IS NOT NULL
+        AND p_target_date >= s.pause_start
+        AND p_target_date <= COALESCE(s.pause_end, p_target_date)
+      )
+      AND NOT (
+        (s.skip_saturday AND EXTRACT(DOW FROM p_target_date) = 6)
+        OR EXTRACT(DOW FROM p_target_date)::INT = ANY(COALESCE(s.skip_weekdays, ARRAY[]::SMALLINT[]))
+      )
+  LOOP
+    PERFORM transition_delivery_status_v2(v_sub.id, p_target_date, p_stage, 'bulk-admin', 'Bulk daily processing');
+    v_count := v_count + 1;
+  END LOOP;
+
+  INSERT INTO system_logs (action_type, description, actor)
+  VALUES ('BULK_DEDUCTION', v_count || ' deliveries updated for ' || p_target_date || ' at stage ' || p_stage, 'admin');
+
+  RETURN v_count;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION manual_adjust_delivery_v2(
+  p_sub_id BIGINT,
+  p_target_date DATE,
+  p_action TEXT,
+  p_reason TEXT DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  CASE UPPER(p_action)
+    WHEN 'DEDUCT' THEN
+      RETURN transition_delivery_status_v2(p_sub_id, p_target_date, 'delivered', 'admin-manual', COALESCE(p_reason, 'Manual delivery deduction'));
+    WHEN 'RESTORE' THEN
+      RETURN transition_delivery_status_v2(p_sub_id, p_target_date, 'skipped', 'admin-manual', COALESCE(p_reason, 'Manual delivery restore'), 'retro_restore', FALSE);
+    WHEN 'CUSTOMER_SKIP' THEN
+      RETURN transition_delivery_status_v2(p_sub_id, p_target_date, 'skipped', 'admin-manual', COALESCE(p_reason, 'Customer skip entered retroactively'), 'customer_skip', FALSE);
+    WHEN 'KITCHEN_FAULT' THEN
+      RETURN transition_delivery_status_v2(p_sub_id, p_target_date, 'kitchen_missed', 'admin-manual', COALESCE(p_reason, 'Kitchen missed delivery'), 'kitchen_fault', FALSE);
+    WHEN 'OUT_FOR_DELIVERY' THEN
+      RETURN transition_delivery_status_v2(p_sub_id, p_target_date, 'out_for_delivery', 'admin-manual', COALESCE(p_reason, 'Marked out for delivery'));
+    WHEN 'CONFIRM' THEN
+      RETURN transition_delivery_status_v2(p_sub_id, p_target_date, 'confirmed', 'admin-manual', COALESCE(p_reason, 'Delivery confirmed by customer'));
+    ELSE
+      RAISE EXCEPTION 'Unsupported manual delivery action: %', p_action;
+  END CASE;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION generate_delivery_manifest_v2(p_target_date DATE DEFAULT CURRENT_DATE)
+RETURNS JSON
+LANGUAGE plpgsql STABLE
+AS $$
+DECLARE
+  v_manifest JSON;
+BEGIN
+  SELECT json_agg(row_to_json(m)) INTO v_manifest
+  FROM (
+    SELECT
+      s.id AS subscription_id,
+      c.name,
+      c.phone,
+      c.address,
+      s.meal_preference,
+      s.delivery_notes,
+      s.status,
+      s.remaining_tiffins,
+      dr.route_name,
+      dr.sort_order AS route_sort,
+      da.driver_name,
+      da.phone AS driver_phone,
+      d.status AS delivery_status,
+      d.billable
+    FROM subscriptions s
+    JOIN customers c ON c.id = s.customer_id
+    LEFT JOIN delivery_routes dr ON dr.id = s.route_id
+    LEFT JOIN driver_assignments da ON da.route_id = dr.id AND da.active = TRUE
+    LEFT JOIN deliveries d ON d.subscription_id = s.id AND d.delivery_date = p_target_date
+    WHERE s.status IN ('Active', 'Grace')
+      AND (s.status = 'Grace' OR s.remaining_tiffins > 0)
+      AND p_target_date >= s.start_date
+      AND NOT (
+        s.pause_start IS NOT NULL
+        AND p_target_date >= s.pause_start
+        AND p_target_date <= COALESCE(s.pause_end, p_target_date)
+      )
+      AND NOT (
+        (s.skip_saturday AND EXTRACT(DOW FROM p_target_date) = 6)
+        OR EXTRACT(DOW FROM p_target_date)::INT = ANY(COALESCE(s.skip_weekdays, ARRAY[]::SMALLINT[]))
+      )
+    ORDER BY COALESCE(dr.sort_order, 9999), c.name
+  ) m;
+
+  RETURN COALESCE(v_manifest, '[]'::JSON);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION get_renewal_queue_v2()
+RETURNS TABLE (
+  subscription_id BIGINT,
+  customer_name TEXT,
+  phone TEXT,
+  remaining_tiffins INT,
+  last_reminded_at TIMESTAMPTZ
+)
+LANGUAGE plpgsql STABLE
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    s.id,
+    c.name,
+    c.phone,
+    s.remaining_tiffins,
+    s.last_reminded_at
+  FROM subscriptions s
+  JOIN customers c ON c.id = s.customer_id
+  WHERE s.status IN ('Active', 'Grace')
+    AND s.remaining_tiffins <= 3
+  ORDER BY s.remaining_tiffins ASC, s.last_reminded_at NULLS FIRST, s.created_at ASC;
+END;
+$$;

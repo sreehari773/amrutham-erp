@@ -1,12 +1,37 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getCustomerProfitability, type CustomerProfitability } from "@/app/actions/analytics";
+import { formatINR } from "@/lib/utils";
+
+const profitabilityUiEnabled = process.env.NEXT_PUBLIC_PROFIT_ANALYTICS_UI_ENABLED === "true";
 
 export default function ReportsPage() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [customerId, setCustomerId] = useState("");
   const [month, setMonth] = useState("");
+  const [profitability, setProfitability] = useState<CustomerProfitability[]>([]);
+  const [profitabilityError, setProfitabilityError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!profitabilityUiEnabled) {
+      setProfitability([]);
+      setProfitabilityError(null);
+      return;
+    }
+
+    const targetMonth = month || undefined;
+    getCustomerProfitability(targetMonth).then((result) => {
+      if (result.error) {
+        setProfitabilityError(result.error);
+        return;
+      }
+
+      setProfitability(result.data ?? []);
+      setProfitabilityError(null);
+    });
+  }, [month]);
 
   const handleDownload = () => {
     let url = "/api/export/invoices_v2?";
@@ -90,6 +115,60 @@ export default function ReportsPage() {
           </button>
         </div>
       </div>
+
+      {profitabilityUiEnabled ? (
+        <div className="card mt-8 space-y-4">
+          <div>
+            <h2 className="text-lg font-semibold mb-2">Customer Profit Visibility</h2>
+            <p className="text-sm text-gray-400">
+              Revenue minus ingredient and delivery cost, computed from billable delivered meals and invoice history.
+            </p>
+          </div>
+
+          {profitabilityError ? (
+            <div className="alert alert-error">{profitabilityError}</div>
+          ) : profitability.length === 0 ? (
+            <div className="text-sm text-gray-400">No profitability data available for the selected month yet.</div>
+          ) : (
+            <div className="space-y-3">
+              {profitability.slice(0, 12).map((row) => (
+                <div key={row.customer_id} className="rounded-xl border border-gray-800 p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="font-semibold">{row.name}</div>
+                      <div className="text-xs text-gray-400">
+                        Customer #{row.customer_id} | {row.phone || "No phone"}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm text-gray-400">Profit</div>
+                      <div className="font-semibold">{formatINR(row.profit)}</div>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-4 gap-3 text-sm">
+                    <div>
+                      <div className="text-gray-400">Revenue</div>
+                      <div>{formatINR(row.revenue)}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-400">Ingredient</div>
+                      <div>{formatINR(row.ingredient_cost)}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-400">Delivery</div>
+                      <div>{formatINR(row.delivery_cost)}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-400">Meals</div>
+                      <div>{row.delivered_meals}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }

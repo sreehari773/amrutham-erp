@@ -9,6 +9,7 @@ import {
   renewSubscription,
   updateSubscriptionWeekdaySkips,
 } from "@/app/actions/sprint1";
+import { manualAdjustDelivery } from "@/app/actions/deductions";
 import type { SubscriptionPlan } from "@/app/actions/plans";
 import InvoiceTracker from "./InvoiceTracker";
 
@@ -21,6 +22,8 @@ const WEEKDAY_OPTIONS = [
   { value: 5, label: "Friday" },
   { value: 6, label: "Saturday" },
 ];
+
+const deliveryCorrectionsEnabled = process.env.NEXT_PUBLIC_KITCHEN_FAULT_UI_ENABLED === "true";
 
 export default function CustomerModificationModal({
   sub,
@@ -42,6 +45,11 @@ export default function CustomerModificationModal({
   const [renewStartDate, setRenewStartDate] = useState(todayIST());
   const [skipWeekdays, setSkipWeekdays] = useState<number[]>([]);
   const [skipLoading, setSkipLoading] = useState(false);
+  const [deliveryActionDate, setDeliveryActionDate] = useState(todayIST());
+  const [deliveryActionType, setDeliveryActionType] = useState<
+    "DEDUCT" | "RESTORE" | "CUSTOMER_SKIP" | "KITCHEN_FAULT" | "OUT_FOR_DELIVERY" | "CONFIRM"
+  >("CONFIRM");
+  const [deliveryActionReason, setDeliveryActionReason] = useState("");
   const [deliverySummary, setDeliverySummary] = useState<{
     customerId: number;
     subscriptionId: number;
@@ -54,6 +62,10 @@ export default function CustomerModificationModal({
     blockedReason: string | null;
     nextEligibleDate: string | null;
     isEligibleToday: boolean;
+    todayDeliveryStatus: string | null;
+    todayDeliveryBillable: boolean | null;
+    todayFaultType: string | null;
+    holidayOptOut: boolean;
   } | null>(null);
   const [deliverySummaryError, setDeliverySummaryError] = useState<string | null>(null);
 
@@ -213,6 +225,38 @@ export default function CustomerModificationModal({
     }
   }
 
+  async function handleDeliveryAction() {
+    if (!deliveryActionDate) {
+      window.alert("Select a delivery date first.");
+      return;
+    }
+
+    setLoading(true);
+    const result = await manualAdjustDelivery(
+      sub.subscription_id,
+      deliveryActionDate,
+      deliveryActionType,
+      deliveryActionReason.trim() || "Manual delivery adjustment"
+    );
+    setLoading(false);
+
+    if (result.error) {
+      window.alert(result.error);
+      return;
+    }
+
+    const summaryResponse = await getSubscriptionDeliverySummary(sub.subscription_id);
+    if (summaryResponse.data) {
+      setDeliverySummary(summaryResponse.data);
+      setDeliverySummaryError(null);
+    } else if (summaryResponse.error) {
+      setDeliverySummaryError(summaryResponse.error);
+    }
+
+    await onRefresh();
+    window.alert("Delivery record updated.");
+  }
+
   async function handleRenew() {
     if (!renewPlanId) {
       window.alert("Please select a plan to renew with.");
@@ -308,11 +352,72 @@ export default function CustomerModificationModal({
                     {deliverySummary.isEligibleToday ? "Eligible" : deliverySummary.blockedReason ?? "Blocked"}
                   </p>
                 </div>
+                <div className="p-4 rounded-xl border" style={{ borderColor: "var(--border)", background: "rgba(255,255,255,0.5)" }}>
+                  <p className="text-xs text-gray-500">Recorded today</p>
+                  <p className="font-bold text-base">
+                    {deliverySummary.todayDeliveryStatus ?? "No row"}
+                  </p>
+                </div>
+                <div className="p-4 rounded-xl border" style={{ borderColor: "var(--border)", background: "rgba(255,255,255,0.5)" }}>
+                  <p className="text-xs text-gray-500">Holiday auto-skip</p>
+                  <p className="font-bold text-base">
+                    {deliverySummary.holidayOptOut ? "Opted out" : "Default enabled"}
+                  </p>
+                </div>
               </div>
             ) : (
               <div className="text-sm text-gray-500">Loading delivery summary...</div>
             )}
           </section>
+
+          {deliveryCorrectionsEnabled ? (
+            <section>
+              <h3 className="text-sm font-bold uppercase tracking-wider mb-4" style={{ color: "var(--text-muted)" }}>Delivery corrections</h3>
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div className="field">
+                  <label className="field-label text-xs">Delivery Date</label>
+                  <input
+                    type="date"
+                    className="text-input"
+                    value={deliveryActionDate}
+                    onChange={(e) => setDeliveryActionDate(e.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label className="field-label text-xs">Action</label>
+                  <select
+                    className="select-input"
+                    value={deliveryActionType}
+                    onChange={(e) =>
+                      setDeliveryActionType(
+                        e.target.value as "DEDUCT" | "RESTORE" | "CUSTOMER_SKIP" | "KITCHEN_FAULT" | "OUT_FOR_DELIVERY" | "CONFIRM"
+                      )
+                    }
+                  >
+                    <option value="OUT_FOR_DELIVERY">Pending to out for delivery</option>
+                    <option value="DEDUCT">Mark delivered</option>
+                    <option value="CONFIRM">Confirm delivered</option>
+                    <option value="CUSTOMER_SKIP">Retroactive customer skip</option>
+                    <option value="KITCHEN_FAULT">Kitchen fault / miss</option>
+                    <option value="RESTORE">Restore credited meal</option>
+                  </select>
+                </div>
+              </div>
+              <div className="field mb-4">
+                <label className="field-label text-xs">Reason</label>
+                <input
+                  type="text"
+                  className="text-input"
+                  value={deliveryActionReason}
+                  onChange={(e) => setDeliveryActionReason(e.target.value)}
+                  placeholder="Required for disputes, kitchen misses, and retroactive changes"
+                />
+              </div>
+              <button className="btn-secondary w-full" onClick={handleDeliveryAction} disabled={loading}>
+                Save delivery correction
+              </button>
+            </section>
+          ) : null}
 
           <section>
             <h3 className="text-sm font-bold uppercase tracking-wider mb-4" style={{ color: "var(--text-muted)" }}>Weekday delivery rules</h3>

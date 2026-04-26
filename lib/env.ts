@@ -26,9 +26,38 @@ function firstDefinedEnv(names: string[]): string | undefined {
   return undefined;
 }
 
+function parseBooleanEnv(name: string, fallback = false): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+
+  if (!value) {
+    return fallback;
+  }
+
+  return ["1", "true", "yes", "on"].includes(value);
+}
+
 export const env = {
   get supabaseUrl() { return requireEnv("NEXT_PUBLIC_SUPABASE_URL"); },
   get supabaseServiceRoleKey() { return requireEnv("SUPABASE_SERVICE_ROLE_KEY"); },
+  rollout: {
+    get skipAutomationShadowEnabled() { return parseBooleanEnv("SKIP_AUTOMATION_SHADOW_ENABLED"); },
+    get skipAutomationWriteEnabled() { return parseBooleanEnv("SKIP_AUTOMATION_WRITE_ENABLED"); },
+    get holidaySkipShadowEnabled() { return parseBooleanEnv("HOLIDAY_SKIP_SHADOW_ENABLED"); },
+    get holidaySkipWriteEnabled() { return parseBooleanEnv("HOLIDAY_SKIP_WRITE_ENABLED"); },
+    get deliveryStatusShadowEnabled() { return parseBooleanEnv("DELIVERY_STATUS_SHADOW_ENABLED"); },
+    get deliveryStatusWriteEnabled() { return parseBooleanEnv("DELIVERY_STATUS_WRITE_ENABLED"); },
+    get kitchenFaultShadowEnabled() { return parseBooleanEnv("KITCHEN_FAULT_SHADOW_ENABLED"); },
+    get kitchenFaultWriteEnabled() { return parseBooleanEnv("KITCHEN_FAULT_WRITE_ENABLED"); },
+    get autoExtensionShadowEnabled() { return parseBooleanEnv("AUTO_EXTENSION_SHADOW_ENABLED"); },
+    get autoExtensionWriteEnabled() { return parseBooleanEnv("AUTO_EXTENSION_WRITE_ENABLED"); },
+    get retroSkipAdjustmentShadowEnabled() { return parseBooleanEnv("RETRO_SKIP_ADJUSTMENT_SHADOW_ENABLED"); },
+    get retroSkipAdjustmentWriteEnabled() { return parseBooleanEnv("RETRO_SKIP_ADJUSTMENT_WRITE_ENABLED"); },
+    get prorationShadowEnabled() { return parseBooleanEnv("PRORATION_SHADOW_ENABLED"); },
+    get prorationWriteEnabled() { return parseBooleanEnv("PRORATION_WRITE_ENABLED"); },
+    get whatsappAutomationShadowEnabled() { return parseBooleanEnv("WHATSAPP_AUTOMATION_SHADOW_ENABLED"); },
+    get whatsappAutomationWriteEnabled() { return parseBooleanEnv("WHATSAPP_AUTOMATION_WRITE_ENABLED"); },
+    get profitAnalyticsUiEnabled() { return parseBooleanEnv("PROFIT_ANALYTICS_UI_ENABLED"); },
+  },
 };
 
 export function isBasicAuthConfigured(): boolean {

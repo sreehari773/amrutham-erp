@@ -11,6 +11,8 @@ export type MessagingEvent = {
   channel: string;
   message_text: string | null;
   status: string;
+  reference_key: string | null;
+  metadata: Record<string, unknown>;
   sent_at: string | null;
   created_at: string;
 };
@@ -20,9 +22,29 @@ export async function queueMessage(input: {
   customerId?: number;
   eventType: MessageTemplate;
   vars?: Record<string, string>;
+  referenceKey?: string;
+  metadata?: Record<string, unknown>;
 }): Promise<{ data?: MessagingEvent; error?: string }> {
   const sb = getSupabaseAdmin();
   const text = buildMessageText(input.eventType, input.vars ?? {});
+
+  if (input.referenceKey) {
+    const { data: existing, error: existingError } = await sb
+      .from("messaging_events")
+      .select("*")
+      .eq("event_type", input.eventType)
+      .eq("reference_key", input.referenceKey)
+      .limit(1)
+      .maybeSingle();
+
+    if (existingError) {
+      return { error: existingError.message };
+    }
+
+    if (existing) {
+      return { data: existing as MessagingEvent };
+    }
+  }
 
   const { data, error } = await sb
     .from("messaging_events")
@@ -31,6 +53,8 @@ export async function queueMessage(input: {
       customer_id: input.customerId ?? null,
       event_type: input.eventType,
       message_text: text,
+      reference_key: input.referenceKey ?? null,
+      metadata: input.metadata ?? {},
     })
     .select()
     .single();

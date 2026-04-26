@@ -1,7 +1,32 @@
 "use server";
 
+import { env } from "@/lib/env";
+import { logShadowMismatch } from "@/lib/rollout";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { getCustomerSession } from "./customerAuth";
+
+const IST_TZ = "Asia/Kolkata";
+
+function todayIST(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: IST_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+function currentIstHourMinute() {
+  const hour = Number.parseInt(
+    new Intl.DateTimeFormat("en-US", { timeZone: IST_TZ, hour: "numeric", hour12: false }).format(new Date()),
+    10
+  );
+  const minute = Number.parseInt(
+    new Intl.DateTimeFormat("en-US", { timeZone: IST_TZ, minute: "numeric" }).format(new Date()),
+    10
+  );
+  return { hour, minute };
+}
 
 export async function getUpcomingDeliveries() {
   const customerId = await getCustomerSession();
@@ -10,7 +35,7 @@ export async function getUpcomingDeliveries() {
   const sb = getSupabaseAdmin();
   const { data: sub } = await sb
     .from("subscriptions")
-    .select("id, start_date, pause_start, pause_end, skip_saturday, meal_preference")
+    .select("id, start_date, pause_start, pause_end, skip_saturday, skip_weekdays, meal_preference")
     .eq("customer_id", customerId)
     .in("status", ["Active", "Grace"])
     .limit(1)
@@ -30,36 +55,50 @@ export async function getUpcomingDeliveries() {
 export async function pauseDeliveryForDate(targetDateStr: string, isDinner: boolean) {
   const customerId = await getCustomerSession();
   if (!customerId) return { error: "Not authenticated" };
+  const { skipAutomationShadowEnabled, skipAutomationWriteEnabled } = env.rollout;
 
-  // Cut-off Check Rule: Lunch < 8 AM, Dinner < 1 PM
-  const now = new Date();
-  const targetDate = new Date(targetDateStr);
-  
-  if (now.toDateString() === targetDate.toDateString()) {
-    const currentHour = now.getHours();
-    // Assuming standard time zone (IST) if deployed there, or standard local
-    if (!isDinner && currentHour >= 8) {
+  const today = todayIST();
+  const { hour, minute } = currentIstHourMinute();
+
+  if (targetDateStr < today) {
+    return { error: "You cannot skip past dates." };
+  }
+
+  if (targetDateStr === today) {
+    const totalMinutes = hour * 60 + minute;
+    if (!isDinner && totalMinutes >= 8 * 60) {
       return { error: "Too late! Lunch skips must be made before 8:00 AM today." };
     }
-    if (isDinner && currentHour >= 13) {
+    if (isDinner && totalMinutes >= 13 * 60) {
       return { error: "Too late! Dinner skips must be made before 1:00 PM today." };
     }
-  } else if (targetDate < now && now.toDateString() !== targetDate.toDateString()) {
-    return { error: "You cannot skip past dates." };
   }
 
   const sb = getSupabaseAdmin();
   const { data: sub } = await sb
     .from("subscriptions")
-    .select("id")
+    .select("id, start_date, pause_start, pause_end")
     .eq("customer_id", customerId)
     .in("status", ["Active", "Grace"])
     .limit(1)
     .single();
-    
-    if (!sub) return { error: "No active subscription found." };
 
-  // Insert a 1-day pause
+  if (!sub) return { error: "No active subscription found." };
+
+  if (targetDateStr < sub.start_date) {
+    return { error: "You cannot skip a date before your subscription starts." };
+  }
+
+  const effectivePauseEnd = sub.pause_end ?? sub.pause_start;
+  if (
+    sub.pause_start &&
+    effectivePauseEnd &&
+    targetDateStr >= sub.pause_start &&
+    targetDateStr <= effectivePauseEnd
+  ) {
+    return { error: "This delivery date is already skipped or paused." };
+  }
+
   const { error } = await sb.from("pause_history").insert({
     subscription_id: sub.id,
     pause_start: targetDateStr,
@@ -68,6 +107,43 @@ export async function pauseDeliveryForDate(targetDateStr: string, isDinner: bool
   });
 
   if (error) return { error: error.message };
+
+  const mergedStart = sub.pause_start && sub.pause_start < targetDateStr ? sub.pause_start : targetDateStr;
+  const mergedEnd =
+    effectivePauseEnd && effectivePauseEnd > targetDateStr
+      ? effectivePauseEnd
+      : targetDateStr;
+
+  if (skipAutomationShadowEnabled) {
+    await logShadowMismatch("SHADOW_SKIP_MISMATCH", {
+      subscriptionId: sub.id,
+      customerId,
+      targetDate: targetDateStr,
+      isDinner,
+      legacyWindow: {
+        pause_start: sub.pause_start,
+        pause_end: sub.pause_end,
+      },
+      projectedWindow: {
+        pause_start: mergedStart,
+        pause_end: mergedEnd,
+      },
+    });
+  }
+
+  if (!skipAutomationWriteEnabled) {
+    return { success: true };
+  }
+
+  const { error: subscriptionError } = await sb
+    .from("subscriptions")
+    .update({
+      pause_start: mergedStart,
+      pause_end: mergedEnd,
+    })
+    .eq("id", sub.id);
+
+  if (subscriptionError) return { error: subscriptionError.message };
 
   return { success: true };
 }

@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
+import { env } from "@/lib/env";
+import { logShadowMismatch } from "@/lib/rollout";
 import { getSupabaseAdmin } from "@/lib/supabase";
+import { queueMessage } from "@/app/actions/messaging";
 
 export const dynamic = "force-dynamic";
 
@@ -12,46 +15,103 @@ export async function POST(req: Request) {
     }
 
     const sb = getSupabaseAdmin();
+    const {
+      holidaySkipShadowEnabled,
+      holidaySkipWriteEnabled,
+      whatsappAutomationShadowEnabled,
+    } = env.rollout;
 
-    // 1. Get all currently active subscriptions
-    const { data: activeSubs, error: fetchError } = await sb
+    if (holidaySkipShadowEnabled) {
+      const [{ count: legacyCount }, { count: projectedCount }] = await Promise.all([
+        sb
+          .from("subscriptions")
+          .select("id", { count: "exact", head: true })
+          .in("status", ["Active", "Grace"])
+          .lte("start_date", date),
+        sb
+          .from("subscriptions")
+          .select("id", { count: "exact", head: true })
+          .in("status", ["Active", "Grace"])
+          .eq("holiday_opt_out", false)
+          .lte("start_date", date),
+      ]);
+
+      await logShadowMismatch("SHADOW_HOLIDAY_MISMATCH", {
+        date,
+        legacyCandidateCount: legacyCount ?? 0,
+        projectedCandidateCount: projectedCount ?? 0,
+      });
+    }
+
+    let count: number | null = null;
+    let holidayError: { message: string } | null = null;
+
+    if (holidaySkipWriteEnabled) {
+      const holidayResult = await sb.rpc("apply_global_holiday_skip_v2", {
+        p_target_date: date,
+        p_reason: "Festival/Holiday auto-skip",
+      });
+      count = Number(holidayResult.data ?? 0);
+      holidayError = holidayResult.error;
+    } else {
+      const { data: legacySubscriptions, error: legacyFetchError } = await sb
+        .from("subscriptions")
+        .select("id")
+        .in("status", ["Active", "Grace"])
+        .lte("start_date", date);
+
+      if (legacyFetchError) {
+        holidayError = { message: legacyFetchError.message };
+      } else {
+        const ids = (legacySubscriptions ?? []).map((row) => row.id);
+        count = ids.length;
+
+        if (ids.length > 0) {
+          const legacyUpdate = await sb
+            .from("subscriptions")
+            .update({ pause_start: date, pause_end: date })
+            .in("id", ids);
+
+          if (legacyUpdate.error) {
+            holidayError = { message: legacyUpdate.error.message };
+          }
+        }
+      }
+    }
+
+    if (holidayError) {
+      return NextResponse.json({ error: holidayError.message }, { status: 500 });
+    }
+
+    const { data: impactedSubscriptions } = await sb
       .from("subscriptions")
-      .select("id")
-      .eq("status", "Active");
+      .select("id, customer_id")
+      .eq("pause_start", date)
+      .eq("pause_end", date)
+      .eq("holiday_opt_out", false);
 
-    if (fetchError) {
-      return NextResponse.json({ error: fetchError.message }, { status: 500 });
+    if (env.rollout.whatsappAutomationWriteEnabled) {
+      await Promise.all(
+        (impactedSubscriptions ?? []).map((subscription) =>
+          queueMessage({
+            subscriptionId: subscription.id,
+            customerId: subscription.customer_id,
+            eventType: "holiday_skip_notice",
+            vars: { date, reason: "festival schedule" },
+            referenceKey: `holiday-skip:${subscription.id}:${date}`,
+            metadata: { date, source: "holiday-route" },
+          })
+        )
+      );
+    } else if (whatsappAutomationShadowEnabled) {
+      await logShadowMismatch("SHADOW_MESSAGE_ENQUEUE", {
+        feature: "holiday-skip-notice",
+        date,
+        subscriptionIds: (impactedSubscriptions ?? []).map((subscription) => subscription.id),
+      });
     }
 
-    if (!activeSubs || activeSubs.length === 0) {
-      return NextResponse.json({ count: 0 });
-    }
-
-    const subIds = activeSubs.map(s => s.id);
-
-    // 2. Set pause_start and pause_end to the selected date
-    const { error: updateError } = await sb
-      .from("subscriptions")
-      .update({
-        pause_start: date,
-        pause_end: date
-      })
-      .in("id", subIds);
-
-    if (updateError) {
-      return NextResponse.json({ error: updateError.message }, { status: 500 });
-    }
-
-    // 3. Log the system action
-    await sb.from("system_logs").insert([
-      {
-        action_type: "HOLIDAY_MARKED",
-        description: `Marked holiday for ${activeSubs.length} subscriptions on ${date}`,
-        actor: "system",
-      },
-    ]);
-
-    return NextResponse.json({ count: activeSubs.length });
+    return NextResponse.json({ count: Number(count ?? 0) });
   } catch (error) {
     console.error("Holiday API Error:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

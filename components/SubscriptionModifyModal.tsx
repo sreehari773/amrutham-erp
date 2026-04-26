@@ -21,6 +21,8 @@ type Props = {
   onRefresh: () => Promise<void> | void;
 };
 
+const prorationUiEnabled = process.env.NEXT_PUBLIC_PRORATION_UI_ENABLED === "true";
+
 export default function SubscriptionModifyModal({ sub, catalog, onClose, onRefresh }: Props) {
   const inferred = inferSubscriptionSelection(catalog, sub.total_tiffins, sub.price_per_tiffin);
   const [templateId, setTemplateId] = useState(inferred.templateId);
@@ -29,6 +31,7 @@ export default function SubscriptionModifyModal({ sub, catalog, onClose, onRefre
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const deliveredCount = Math.max(sub.total_tiffins - sub.remaining_tiffins, 0);
+  const existingRemainingValue = sub.remaining_tiffins * sub.price_per_tiffin;
   const selection = useMemo(() => {
     try {
       return resolveSubscriptionSelection(catalog, templateId, mealTypeId);
@@ -36,6 +39,11 @@ export default function SubscriptionModifyModal({ sub, catalog, onClose, onRefre
       return null;
     }
   }, [catalog, mealTypeId, templateId]);
+  const projectedRemaining = selection ? selection.totalTiffins - deliveredCount : 0;
+  const projectedRemainingValue = selection ? projectedRemaining * selection.pricePerTiffin : 0;
+  const projectedProrationDelta = selection
+    ? Number((projectedRemainingValue - existingRemainingValue).toFixed(2))
+    : 0;
 
   async function handleSave() {
     if (!selection) {
@@ -162,6 +170,16 @@ export default function SubscriptionModifyModal({ sub, catalog, onClose, onRefre
                   <span>{formatINR(selection.totalAmount)}</span>
                 </div>
               </div>
+              {prorationUiEnabled ? (
+                <div className="mt-4 rounded-xl border border-dashed p-4 text-sm" style={{ borderColor: "var(--border)" }}>
+                  <div className="font-semibold mb-1">Proration preview</div>
+                  <div>Existing remaining value: {formatINR(existingRemainingValue)}</div>
+                  <div>New remaining value: {formatINR(projectedRemainingValue)}</div>
+                  <div>
+                    Estimated delta: {formatINR(projectedProrationDelta)} {projectedProrationDelta < 0 ? "(credit)" : projectedProrationDelta > 0 ? "(additional bill)" : "(no change)"}
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : null}
 

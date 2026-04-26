@@ -26,9 +26,23 @@ function firstDefinedEnv(names: string[]): string | undefined {
   return undefined;
 }
 
+function parseBooleanEnv(name: string, fallback = false): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+
+  if (!value) {
+    return fallback;
+  }
+
+  return ["1", "true", "yes", "on"].includes(value);
+}
+
 export const env = {
   get supabaseUrl() { return requireEnv("NEXT_PUBLIC_SUPABASE_URL"); },
   get supabaseServiceRoleKey() { return requireEnv("SUPABASE_SERVICE_ROLE_KEY"); },
+  rollout: {
+    get skipAutomationShadowEnabled() { return parseBooleanEnv("SKIP_AUTOMATION_SHADOW_ENABLED"); },
+    get skipAutomationWriteEnabled() { return parseBooleanEnv("SKIP_AUTOMATION_WRITE_ENABLED"); },
+  },
 };
 
 export function isBasicAuthConfigured(): boolean {

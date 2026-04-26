@@ -1,6 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { env } from "@/lib/env";
+import { logShadowMismatch } from "@/lib/rollout";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import {
   DEFAULT_SUBSCRIPTION_CATALOG,
@@ -11,6 +13,7 @@ import {
   type SubscriptionTemplate,
 } from "@/lib/subscription-catalog";
 import { currentMonthIST, todayIST } from "@/lib/utils";
+import { queueMessage } from "@/app/actions/messaging";
 
 const SUBSCRIPTION_CATALOG_ACTION = "SUBSCRIPTION_CATALOG";
 const SYSTEM_LOG_ACTOR = "admin-ui";
@@ -41,6 +44,10 @@ type DirectoryRow = {
 
 const WEEKDAY_SET = new Set([0, 1, 2, 3, 4, 5, 6]);
 const WEEKDAY_LABELS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
+
+function shouldQueueAutomatedMessages() {
+  return env.rollout.whatsappAutomationWriteEnabled;
+}
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
@@ -697,6 +704,7 @@ export async function pauseSubscription(
 ) {
   try {
     const sb = getSupabaseAdmin();
+    const { skipAutomationShadowEnabled, skipAutomationWriteEnabled } = env.rollout;
 
     // Midday cutoff: if pausing for today and it's past 10:30 AM IST, start tomorrow
     const { isPastKitchenCutoff, todayIST: getToday, tomorrowIST: getTomorrow } = await import("@/lib/utils");
@@ -707,38 +715,91 @@ export async function pauseSubscription(
       effectiveStart = getTomorrow();
     }
 
-    // Handle cumulative mode: extend existing pause
-    if (pauseMode === "cumulative") {
-      const { data: currentSub } = await sb
-        .from("subscriptions")
-        .select("pause_start, pause_end")
-        .eq("id", subId)
-        .single();
-
-      if (currentSub?.pause_start && pauseEnd) {
-        // Extend: keep original start, push end further
-        effectiveStart = currentSub.pause_start;
-      }
-    }
-
-    const { error } = await sb
+    const { data: currentSub, error: currentSubError } = await sb
       .from("subscriptions")
-      .update({ pause_start: effectiveStart, pause_end: pauseEnd })
+      .select("pause_start, pause_end")
       .eq("id", subId)
-      .eq("status", "Active");
+      .maybeSingle();
 
-    if (error) {
-      return { error: error.message };
+    if (currentSubError) {
+      return { error: currentSubError.message };
     }
 
-    // Log to pause_history
-    await sb.from("pause_history").insert({
-      subscription_id: subId,
-      pause_start: effectiveStart,
-      pause_end: pauseEnd,
-      pause_mode: pauseMode,
-      reason: reason ?? null,
-    });
+    const currentPauseEnd = currentSub?.pause_end ?? currentSub?.pause_start ?? null;
+    const legacyPauseEnd = pauseEnd ?? effectiveStart;
+    const legacyWindow =
+      pauseMode === "cumulative" && currentSub?.pause_start
+        ? {
+            pause_start: currentSub.pause_start < effectiveStart ? currentSub.pause_start : effectiveStart,
+            pause_end:
+              currentPauseEnd && currentPauseEnd > legacyPauseEnd ? currentPauseEnd : legacyPauseEnd,
+          }
+        : {
+            pause_start: effectiveStart,
+            pause_end: legacyPauseEnd,
+          };
+
+    if (skipAutomationShadowEnabled) {
+      await logShadowMismatch("SHADOW_SKIP_MISMATCH", {
+        subscriptionId: subId,
+        pauseMode,
+        requestedStart: pauseStart,
+        requestedEnd: pauseEnd,
+        effectiveStart,
+        legacyWindow,
+        projectedWindow: legacyWindow,
+        reason: reason ?? "Admin pause",
+      });
+    }
+
+    if (skipAutomationWriteEnabled) {
+      const { error } = await sb.rpc("register_pause_event_v2", {
+        p_sub_id: subId,
+        p_pause_start: effectiveStart,
+        p_pause_end: pauseEnd,
+        p_pause_mode: pauseMode,
+        p_reason: reason ?? "Admin pause",
+        p_actor: SYSTEM_LOG_ACTOR,
+      });
+
+      if (error) {
+        return { error: error.message };
+      }
+    } else {
+      const { error: subscriptionError } = await sb
+        .from("subscriptions")
+        .update({
+          pause_start: legacyWindow.pause_start,
+          pause_end: legacyWindow.pause_end,
+        })
+        .eq("id", subId);
+
+      if (subscriptionError) {
+        return { error: subscriptionError.message };
+      }
+
+      const { error: historyError } = await sb.from("pause_history").insert({
+        subscription_id: subId,
+        pause_start: effectiveStart,
+        pause_end: pauseEnd ?? effectiveStart,
+        reason: reason ?? "Admin pause",
+      });
+
+      if (historyError) {
+        return { error: historyError.message };
+      }
+
+      await insertSystemLog(
+        "SUBSCRIPTION_PAUSED",
+        JSON.stringify({
+          subscriptionId: subId,
+          pauseStart: effectiveStart,
+          pauseEnd: pauseEnd ?? effectiveStart,
+          pauseMode,
+          mode: "legacy",
+        })
+      );
+    }
 
     revalidateOperationalViews();
     return { success: true };
@@ -823,13 +884,14 @@ export async function updateSubscriptionAssignment(input: {
 }) {
   try {
     const sb = getSupabaseAdmin();
+    const { prorationShadowEnabled, prorationWriteEnabled, whatsappAutomationShadowEnabled } = env.rollout;
     const { data: catalog } = await getSubscriptionCatalog();
     const selection = resolveSubscriptionSelection(catalog, input.templateId, input.mealTypeId);
 
     const { data: subRow, error: subError } = await sb
-      .from("subscriptions_with_latest_invoice")
-      .select("subscription_id, status, total_tiffins, remaining_tiffins")
-      .eq("subscription_id", input.subId)
+      .from("subscriptions")
+      .select("id, status, total_tiffins, remaining_tiffins, price_per_tiffin, customer_id")
+      .eq("id", input.subId)
       .limit(1)
       .maybeSingle();
 
@@ -853,6 +915,22 @@ export async function updateSubscriptionAssignment(input: {
     }
 
     const remainingTiffins = selection.totalTiffins - deliveredCount;
+    const existingRemainingValue = Number(subRow.remaining_tiffins ?? 0) * Number(subRow.price_per_tiffin ?? 0);
+    const newRemainingValue = remainingTiffins * selection.pricePerTiffin;
+    const proratedDelta = Number((newRemainingValue - existingRemainingValue).toFixed(2));
+
+    if (prorationShadowEnabled) {
+      await logShadowMismatch("SHADOW_PRORATION_MISMATCH", {
+        subscriptionId: input.subId,
+        deliveredCount,
+        remainingTiffins,
+        existingRemainingValue,
+        newRemainingValue,
+        proratedDelta,
+        templateId: input.templateId,
+        mealTypeId: input.mealTypeId,
+      });
+    }
 
     const { error: updateError } = await sb
       .from("subscriptions")
@@ -870,20 +948,103 @@ export async function updateSubscriptionAssignment(input: {
 
     const { data: latestInvoice } = await sb
       .from("invoices")
-      .select("id")
+      .select("id, invoice_number")
       .eq("subscription_id", input.subId)
+      .neq("invoice_type", "adjustment")
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (latestInvoice?.id) {
-      const { error: invoiceError } = await sb
+    let adjustmentInvoiceId: number | null = null;
+
+    if (!prorationWriteEnabled && latestInvoice?.id) {
+      const { error: invoiceMutationError } = await sb
         .from("invoices")
-        .update({ amount: selection.totalAmount })
+        .update({
+          amount: selection.totalAmount,
+          adjustment_meta: {
+            legacyMutation: true,
+            templateId: input.templateId,
+            mealTypeId: input.mealTypeId,
+          },
+        })
         .eq("id", latestInvoice.id);
+
+      if (invoiceMutationError) {
+        return { error: invoiceMutationError.message };
+      }
+    }
+
+    if (prorationWriteEnabled && latestInvoice?.id && proratedDelta !== 0) {
+      let adjustmentInvoiceNumber = `ADJ-${Date.now()}`;
+      const { data: generatedInvoiceNumber } = await sb.rpc("generate_invoice_number", {
+        p_date: todayIST(),
+      });
+
+      if (typeof generatedInvoiceNumber === "string" && generatedInvoiceNumber.trim()) {
+        adjustmentInvoiceNumber = generatedInvoiceNumber;
+      }
+
+      const adjustmentStatus = proratedDelta < 0 ? "Credit" : "Pending";
+      const { data: adjustmentInvoice, error: invoiceError } = await sb
+        .from("invoices")
+        .insert({
+          subscription_id: input.subId,
+          customer_id: subRow.customer_id,
+          invoice_number: adjustmentInvoiceNumber,
+          amount: proratedDelta,
+          recognized_revenue: proratedDelta,
+          payment_status: adjustmentStatus,
+          amount_paid: 0,
+          billing_period_start: todayIST(),
+          billing_period_end: todayIST(),
+          invoice_date: todayIST(),
+          invoice_type: "adjustment",
+          related_invoice_id: latestInvoice.id,
+          adjustment_reason: "Mid-cycle plan change proration",
+          adjustment_meta: {
+            previousInvoiceNumber: latestInvoice.invoice_number,
+            templateId: input.templateId,
+            mealTypeId: input.mealTypeId,
+            deliveredCount,
+            existingRemainingValue,
+            newRemainingValue,
+          },
+        })
+        .select("id")
+        .single();
 
       if (invoiceError) {
         return { error: invoiceError.message };
+      }
+
+      adjustmentInvoiceId = adjustmentInvoice.id;
+
+      if (shouldQueueAutomatedMessages()) {
+        await queueMessage({
+          subscriptionId: input.subId,
+          customerId: subRow.customer_id,
+          eventType: "bill_generated",
+          vars: {
+            amount: Math.abs(proratedDelta).toFixed(0),
+            invoiceNumber: adjustmentInvoiceNumber,
+            period: "plan adjustment",
+          },
+          referenceKey: `plan-adjustment:${input.subId}:${adjustmentInvoiceNumber}`,
+          metadata: {
+            invoiceId: adjustmentInvoiceId,
+            type: "plan-adjustment",
+            delta: proratedDelta,
+          },
+        });
+      } else if (whatsappAutomationShadowEnabled) {
+        await logShadowMismatch("SHADOW_MESSAGE_ENQUEUE", {
+          feature: "plan-adjustment-bill",
+          subscriptionId: input.subId,
+          customerId: subRow.customer_id,
+          invoiceId: adjustmentInvoiceId,
+          invoiceNumber: adjustmentInvoiceNumber,
+        });
       }
     }
 
@@ -896,6 +1057,9 @@ export async function updateSubscriptionAssignment(input: {
         totalTiffins: selection.totalTiffins,
         pricePerTiffin: selection.pricePerTiffin,
         remainingTiffins,
+        proratedDelta,
+        adjustmentInvoiceId,
+        mode: prorationWriteEnabled ? "proration-v2" : "legacy",
       })
     );
 
@@ -965,7 +1129,7 @@ export async function getSubscriptionDeliverySummary(subId: number) {
 
     const { data: subscription, error: subscriptionError } = await sb
       .from("subscriptions")
-      .select("id, customer_id, status, start_date, pause_start, pause_end, remaining_tiffins, total_tiffins, skip_saturday, skip_weekdays")
+      .select("id, customer_id, status, start_date, pause_start, pause_end, remaining_tiffins, total_tiffins, skip_saturday, skip_weekdays, holiday_opt_out")
       .eq("id", subId)
       .maybeSingle();
 
@@ -973,7 +1137,11 @@ export async function getSubscriptionDeliverySummary(subId: number) {
       return { error: subscriptionError?.message ?? "Subscription not found." };
     }
 
-    const [{ count: deliveryCount, error: countError }, { data: latestDelivery, error: latestError }] =
+    const [
+      { count: deliveryCount, error: countError },
+      { data: latestDelivery, error: latestError },
+      { data: todayDelivery, error: todayError },
+    ] =
       await Promise.all([
         sb
           .from("deliveries")
@@ -983,13 +1151,24 @@ export async function getSubscriptionDeliverySummary(subId: number) {
           .from("deliveries")
           .select("delivery_date")
           .eq("subscription_id", subId)
+          .in("status", ["delivered", "confirmed"])
+          .eq("billable", true)
           .order("delivery_date", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        sb
+          .from("deliveries")
+          .select("status, billable, fault_type")
+          .eq("subscription_id", subId)
+          .eq("delivery_date", today)
           .limit(1)
           .maybeSingle(),
       ]);
 
-    if (countError || latestError) {
-      return { error: countError?.message ?? latestError?.message ?? "Unable to load delivery history." };
+    if (countError || latestError || todayError) {
+      return {
+        error: countError?.message ?? latestError?.message ?? todayError?.message ?? "Unable to load delivery history.",
+      };
     }
 
     const blockedReason = getDeliveryBlockedReason(subscription, today);
@@ -1008,6 +1187,10 @@ export async function getSubscriptionDeliverySummary(subId: number) {
         blockedReason,
         nextEligibleDate,
         isEligibleToday: blockedReason == null,
+        todayDeliveryStatus: todayDelivery?.status ?? null,
+        todayDeliveryBillable: todayDelivery?.billable ?? null,
+        todayFaultType: todayDelivery?.fault_type ?? null,
+        holidayOptOut: Boolean(subscription.holiday_opt_out),
       },
     };
   } catch (error) {
@@ -1025,9 +1208,16 @@ export async function getMonthlyDeliveryStats(targetMonth = currentMonthIST()) {
       sb
         .from("deliveries")
         .select("id", { count: "exact", head: true })
+        .in("status", ["delivered", "confirmed"])
+        .eq("billable", true)
         .gte("delivery_date", start)
         .lt("delivery_date", endExclusive),
-      sb.from("deliveries").select("id", { count: "exact", head: true }).eq("delivery_date", today),
+      sb
+        .from("deliveries")
+        .select("id", { count: "exact", head: true })
+        .eq("delivery_date", today)
+        .in("status", ["delivered", "confirmed"])
+        .eq("billable", true),
       sb.from("subscriptions").select("id, remaining_tiffins").eq("status", "Active"),
     ]);
 
