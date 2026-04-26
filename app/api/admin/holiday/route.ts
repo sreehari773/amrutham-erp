@@ -113,7 +113,6 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ count: Number(count ?? 0) });
   } catch (error) {
-    console.error("Holiday API Error:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
