@@ -53,7 +53,6 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ count: activeSubs.length });
   } catch (error) {
-    console.error("Holiday API Error:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

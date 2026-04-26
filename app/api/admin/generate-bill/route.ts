@@ -108,7 +108,6 @@ export async function POST(req: Request) {
     });
 
   } catch (error) {
-    console.error("Custom Billing Error:", error);
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to generate bill" }, { status: 500 });
   }
 }
