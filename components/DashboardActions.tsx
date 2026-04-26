@@ -3,7 +3,6 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { markTodayDelivered } from "@/app/actions/deductions";
-import { getSupabaseAdmin } from "@/lib/supabase";
 import { todayIST } from "@/lib/utils";
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs = 20000): Promise<T> {

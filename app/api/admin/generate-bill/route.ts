@@ -39,25 +39,23 @@ export async function POST(req: Request) {
       env.rollout.retroSkipAdjustmentWriteEnabled ||
       env.rollout.prorationWriteEnabled;
 
-    if (billingWriteEnabled) {
-      const { data: overlappingInvoice } = await sb
-        .from("invoices")
-        .select("id, invoice_number")
-        .eq("subscription_id", subscriptionId)
-        .neq("invoice_type", "adjustment")
-        .not("billing_period_start", "is", null)
-        .not("billing_period_end", "is", null)
-        .lte("billing_period_start", toDate)
-        .gte("billing_period_end", fromDate)
-        .limit(1)
-        .maybeSingle();
+    const { data: overlappingInvoice } = await sb
+      .from("invoices")
+      .select("id, invoice_number")
+      .eq("subscription_id", subscriptionId)
+      .neq("invoice_type", "adjustment")
+      .not("billing_period_start", "is", null)
+      .not("billing_period_end", "is", null)
+      .lte("billing_period_start", toDate)
+      .gte("billing_period_end", fromDate)
+      .limit(1)
+      .maybeSingle();
 
-      if (overlappingInvoice && !adjustment) {
-        return NextResponse.json(
-          { error: `Billing period overlaps with existing invoice ${overlappingInvoice.invoice_number}` },
-          { status: 409 }
-        );
-      }
+    if (overlappingInvoice && !adjustment) {
+      return NextResponse.json(
+        { error: `Billing period overlaps with existing invoice ${overlappingInvoice.invoice_number}` },
+        { status: 409 }
+      );
     }
 
     const [legacyDeliveriesResult, enhancedDeliveriesResult] = await Promise.all([
@@ -99,7 +97,15 @@ export async function POST(req: Request) {
       });
     }
 
-    const deliveryCount = billingWriteEnabled ? enhancedDeliveryCount : legacyDeliveryCount;
+    // Always bill on confirmed/billable deliveries only — legacy unfiltered count is kept solely for shadow logging.
+    const deliveryCount = enhancedDeliveryCount;
+
+    if (deliveryCount === 0) {
+      return NextResponse.json(
+        { error: "No billable deliveries found in this period. Cannot generate an empty invoice." },
+        { status: 400 }
+      );
+    }
 
     const { data: subData, error: subError } = await sb
       .from("subscriptions")

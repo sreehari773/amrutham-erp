@@ -137,7 +137,8 @@ export default function Sidebar() {
         </div>
       </Link>
 
-      <button
+      <a
+        href="/api/auth/signout"
         className="side-link"
         style={{
           width: "100%",
@@ -153,7 +154,7 @@ export default function Sidebar() {
           <line x1="21" y1="12" x2="9" y2="12" />
         </svg>
         <span className="side-link-title" style={{ fontSize: "13px" }}>Sign Out</span>
-      </button>
+      </a>
     </aside>
   );
 }

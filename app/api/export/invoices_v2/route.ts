@@ -20,9 +20,10 @@ export async function GET(req: Request) {
 
     if (month) {
       periodStart = `${month}-01`;
-      const nextMonth = new Date(periodStart);
-      nextMonth.setMonth(nextMonth.getMonth() + 1);
-      periodEnd = nextMonth.toISOString().split("T")[0];
+      // Compute the last day of the selected month so the filter is inclusive
+      const [y, m] = month.split("-").map(Number);
+      const lastDay = new Date(y, m, 0); // day 0 of next month = last day of this month
+      periodEnd = `${y}-${String(m).padStart(2, "0")}-${String(lastDay.getDate()).padStart(2, "0")}`;
     } else if (!periodStart) {
       periodStart = "2000-01-01"; // Fallback if no date specified
     }

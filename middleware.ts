@@ -3,7 +3,7 @@ import { isBasicAuthAuthorized } from "@/lib/basic-auth";
 import { isBasicAuthConfigured } from "@/lib/env";
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/auth/signout).*)"],
 };
 
 export function middleware(req: NextRequest) {

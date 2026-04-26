@@ -12,7 +12,7 @@ import {
   type SubscriptionCatalog,
   type SubscriptionTemplate,
 } from "@/lib/subscription-catalog";
-import { currentMonthIST, todayIST } from "@/lib/utils";
+import { currentMonthIST, isPastKitchenCutoff, todayIST, tomorrowIST } from "@/lib/utils";
 import { queueMessage } from "@/app/actions/messaging";
 
 const SUBSCRIPTION_CATALOG_ACTION = "SUBSCRIPTION_CATALOG";
@@ -707,12 +707,11 @@ export async function pauseSubscription(
     const { skipAutomationShadowEnabled, skipAutomationWriteEnabled } = env.rollout;
 
     // Midday cutoff: if pausing for today and it's past 10:30 AM IST, start tomorrow
-    const { isPastKitchenCutoff, todayIST: getToday, tomorrowIST: getTomorrow } = await import("@/lib/utils");
-    const today = getToday();
+    const today = todayIST();
     let effectiveStart = pauseStart;
 
     if (pauseStart === today && isPastKitchenCutoff()) {
-      effectiveStart = getTomorrow();
+      effectiveStart = tomorrowIST();
     }
 
     const { data: currentSub, error: currentSubError } = await sb

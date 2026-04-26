@@ -37,6 +37,7 @@ export default function CustomerModificationModal({
   onRefresh: () => Promise<void>;
 }) {
   const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [pauseStart, setPauseStart] = useState("");
   const [pauseEnd, setPauseEnd] = useState("");
   const [billStart, setBillStart] = useState("");
@@ -143,7 +144,7 @@ export default function CustomerModificationModal({
     setSkipLoading(false);
 
     if (result.error) {
-      window.alert(result.error);
+      setMessage({ type: "error", text: result.error });
       return;
     }
 
@@ -157,19 +158,23 @@ export default function CustomerModificationModal({
     }
 
     await onRefresh();
-    window.alert("Weekday delivery rules updated.");
+    setMessage({ type: "success", text: "Weekday delivery rules updated." });
   }
 
   async function handlePause() {
     if (!pauseStart) {
-      window.alert("Select a pause start date.");
+      setMessage({ type: "error", text: "Select a pause start date." });
+      return;
+    }
+    if (pauseEnd && pauseEnd < pauseStart) {
+      setMessage({ type: "error", text: "Pause end date must be on or after the start date." });
       return;
     }
     setLoading(true);
     const result = await pauseSubscription(sub.subscription_id, pauseStart, pauseEnd || null);
     setLoading(false);
     if (result.error) {
-      window.alert(result.error);
+      setMessage({ type: "error", text: result.error });
     } else {
       await onRefresh();
       onClose();
@@ -182,7 +187,7 @@ export default function CustomerModificationModal({
     const result = await cancelSubscription(sub.subscription_id);
     setLoading(false);
     if (result.error) {
-      window.alert(result.error);
+      setMessage({ type: "error", text: result.error });
     } else {
       await onRefresh();
       onClose();
@@ -191,7 +196,7 @@ export default function CustomerModificationModal({
 
   async function handleGenerateBill() {
     if (!billStart || !billEnd) {
-      window.alert("Select both a from and to date.");
+      setMessage({ type: "error", text: "Select both a from and to date." });
       return;
     }
 
@@ -215,11 +220,11 @@ export default function CustomerModificationModal({
 
       await downloadBillingExcel(billStart, billEnd);
 
-      window.alert(`Successfully generated bill!\nInvoice ID: ${data.data.invoiceId}\nTotal Deliveries: ${data.data.deliveries}\nAmount: ${formatINR(data.data.amount)}`);
+      setMessage({ type: "success", text: `Bill generated — ${data.data.deliveries} tiffins × price = ${formatINR(data.data.amount)} (Invoice #${data.data.invoiceId})` });
       setBillStart("");
       setBillEnd("");
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Error generating bill");
+      setMessage({ type: "error", text: error instanceof Error ? error.message : "Error generating bill" });
     } finally {
       setLoading(false);
     }
@@ -227,7 +232,7 @@ export default function CustomerModificationModal({
 
   async function handleDeliveryAction() {
     if (!deliveryActionDate) {
-      window.alert("Select a delivery date first.");
+      setMessage({ type: "error", text: "Select a delivery date first." });
       return;
     }
 
@@ -241,7 +246,7 @@ export default function CustomerModificationModal({
     setLoading(false);
 
     if (result.error) {
-      window.alert(result.error);
+      setMessage({ type: "error", text: result.error });
       return;
     }
 
@@ -254,12 +259,12 @@ export default function CustomerModificationModal({
     }
 
     await onRefresh();
-    window.alert("Delivery record updated.");
+    setMessage({ type: "success", text: "Delivery record updated." });
   }
 
   async function handleRenew() {
     if (!renewPlanId) {
-      window.alert("Please select a plan to renew with.");
+      setMessage({ type: "error", text: "Please select a plan to renew with." });
       return;
     }
     setLoading(true);
@@ -271,10 +276,14 @@ export default function CustomerModificationModal({
     const result = await renewSubscription(formData);
     setLoading(false);
     if (result.error) {
-      window.alert(result.error);
+      setMessage({ type: "error", text: result.error });
     } else {
-      await downloadBillingExcel(renewStartDate, renewStartDate);
-      window.alert("Successfully renewed subscription!");
+      // Download invoice for the renewed period: from start date to end of that month
+      const [yr, mo] = renewStartDate.split("-").map(Number);
+      const lastDayOfMonth = new Date(yr, mo, 0).getDate();
+      const renewEndDate = `${yr}-${String(mo).padStart(2, "0")}-${String(lastDayOfMonth).padStart(2, "0")}`;
+      await downloadBillingExcel(renewStartDate, renewEndDate);
+      setMessage({ type: "success", text: "Subscription renewed successfully." });
       await onRefresh();
       onClose();
     }
@@ -297,6 +306,26 @@ export default function CustomerModificationModal({
             </button>
           </div>
         </div>
+
+        {message ? (
+          <div
+            className="px-6 py-3 text-sm font-medium"
+            style={{
+              background: message.type === "success" ? "rgba(16, 185, 129, 0.12)" : "rgba(239, 68, 68, 0.12)",
+              color: message.type === "success" ? "#0f9f74" : "#dc2626",
+              borderBottom: "1px solid var(--border)",
+            }}
+          >
+            {message.text}
+            <button
+              onClick={() => setMessage(null)}
+              className="ml-3 opacity-60 hover:opacity-100"
+              style={{ fontSize: 12 }}
+            >
+              ✕
+            </button>
+          </div>
+        ) : null}
 
         <div className="p-6 space-y-8" style={{ maxHeight: "70vh", overflowY: "auto" }}>
           {/* Details */}
@@ -325,6 +354,12 @@ export default function CustomerModificationModal({
                 <p className="text-xs text-gray-500">Invoice value</p>
                 <p className="font-bold text-lg">{formatINR(sub.total_amount ?? sub.latest_invoice_amount ?? 0)}</p>
               </div>
+              {sub.meal_preference ? (
+                <div className="p-4 rounded-xl border" style={{ borderColor: "var(--border)", background: "rgba(255,255,255,0.5)" }}>
+                  <p className="text-xs text-gray-500">Meal preference</p>
+                  <p className="font-bold text-lg capitalize">{sub.meal_preference}</p>
+                </div>
+              ) : null}
             </div>
           </section>
 
